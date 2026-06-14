@@ -197,6 +197,38 @@ export function calculateCRC32(type: string, data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+function gcd(a: number, b: number): number {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y !== 0) {
+    const next = x % y;
+    x = y;
+    y = next;
+  }
+  return x || 1;
+}
+
+function getFrameDelay(fps: number, frameCount: number, durationSeconds?: number): { numerator: number; denominator: number } {
+  if (durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0) {
+    const durationMs = Math.round(durationSeconds * 1000);
+    const denominatorBase = frameCount * 1000;
+    const divisor = gcd(durationMs, denominatorBase);
+    return {
+      numerator: Math.max(1, durationMs / divisor),
+      denominator: Math.max(1, denominatorBase / divisor),
+    };
+  }
+
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 1;
+  const fpsBase = 1000;
+  const delayMs = Math.max(1, Math.round(fpsBase / safeFps));
+  const divisor = gcd(delayMs, fpsBase);
+  return {
+    numerator: delayMs / divisor,
+    denominator: fpsBase / divisor,
+  };
+}
+
 /**
  * Combines parsed PNG frame ArrayBuffers to assemble a valid Animated PNG (APNG) Blob.
  * Correctly configures acTL (Animation Control), fcTL (Frame Control), and fdAT (Frame Data Chunks).
@@ -258,10 +290,7 @@ export function assembleAPNG(frames: ArrayBuffer[], fps: number, durationSeconds
   const height = ihdrView.getUint32(4, false);
 
   let sequenceNumber = 0;
-  const delayMs = Math.max(
-    1,
-    Math.round(((durationSeconds ?? (frames.length / fps)) * 1000) / numFrames)
-  );
+  const frameDelay = getFrameDelay(fps, numFrames, durationSeconds);
 
   // 4. Sequence all frames
   for (let i = 0; i < numFrames; i++) {
@@ -274,8 +303,8 @@ export function assembleAPNG(frames: ArrayBuffer[], fps: number, durationSeconds
     fcTlView.setUint32(4, width, false); // Width dimension
     fcTlView.setUint32(8, height, false); // Height dimension
     fcTlView.setUint32(12, 0, false); // X coordinate offset
-    fcTlView.setUint16(20, delayMs, false); // Numerator of delay
-    fcTlView.setUint16(22, 1000, false); // Denominator of delay (fixed at 1000ms base)
+    fcTlView.setUint16(20, frameDelay.numerator, false); // Numerator of delay
+    fcTlView.setUint16(22, frameDelay.denominator, false); // Denominator of delay
     fcTlView.setUint8(24, 1); // dispose_op: 1 (APNG_DISPOSE_OP_BACKGROUND) to clear canvas area before next render
     fcTlView.setUint8(25, 0); // blend_op: 0 (APNG_BLEND_OP_SOURCE) to fully overwrite source RGBA values
 

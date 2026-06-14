@@ -366,6 +366,7 @@ export default function App() {
   const [animFrameCount, setAnimFrameCount] = useState(20);
   const [animFps, setAnimFps] = useState(10);
   const [animDuration, setAnimDuration] = useState<number>(2);
+  const [animExtractDuration, setAnimExtractDuration] = useState<number>(2);
   const [animBgColor, setAnimBgColor] = useState('auto'); // 'auto' or hex code e.g. '#ffffff'
   const [animTolerance, setAnimTolerance] = useState(25);
   const [animGapTolerance, setAnimGapTolerance] = useState(15);
@@ -395,7 +396,9 @@ export default function App() {
     video.src = url;
     video.preload = 'metadata';
     video.onloadedmetadata = () => {
-      setVideoDuration(video.duration);
+      const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 2;
+      setVideoDuration(duration);
+      setAnimExtractDuration(duration);
       setAnimDuration(2);
       setVideoWidth(video.videoWidth);
       setVideoHeight(video.videoHeight);
@@ -876,7 +879,7 @@ const compileAnimatedStamp = async (
 
       const totalStamps = cropBoxes.length;
       const N = animFrameCount;
-      const D = Math.min(animDuration, video.duration);
+      const D = Math.min(animExtractDuration, video.duration);
 
       const stampFramesBuffers: ArrayBuffer[][] = Array.from({ length: totalStamps }, () => []);
       const stampRawOriginalFrames: string[][] = Array.from({ length: totalStamps }, () => []);
@@ -1886,7 +1889,7 @@ Description: アニメーションLINEスタンプ (APNG)
       const H = video.videoHeight;
 
       const N = animFrameCount;
-      const D = Math.min(animDuration, video.duration);
+      const D = Math.min(animExtractDuration, video.duration);
 
       const stampFramesBuffers: ArrayBuffer[] = [];
       const stampRawOriginalFrames: string[] = [];
@@ -2509,18 +2512,18 @@ Description: アニメーションLINEスタンプ (APNG)
                               <div className="pt-2 border-t border-gray-150 text-left">
                                 <div className="flex justify-between items-center mb-1 font-sans">
                                   <span className="text-[10px] font-bold text-gray-500">コマ抜きスケジュール ({animFrameCount}コマ)</span>
-                                  <span className="text-[9px] font-bold text-primary-600 font-mono">1コマ: {(animDuration / Math.max(1, animFrameCount)).toFixed(2)}s</span>
+                                  <span className="text-[9px] font-bold text-primary-600 font-mono">抽出間隔: {(animExtractDuration / Math.max(1, animFrameCount - 1)).toFixed(2)}s</span>
                                 </div>
                                 <div className="h-3 bg-gray-200 rounded-full overflow-hidden flex relative items-center">
                                   {/* Duration line */}
                                   <div 
                                     className="absolute left-0 top-0 bottom-0 bg-primary-200 border-r border-primary-400" 
-                                    style={{ width: `${Math.min(100, (animDuration / Math.max(0.1, videoDuration)) * 100)}%` }} 
+                                    style={{ width: `${Math.min(100, (animExtractDuration / Math.max(0.1, videoDuration)) * 100)}%` }} 
                                   />
                                   {/* Extracted Frame markers */}
                                   {Array.from({ length: animFrameCount }).map((_, idx) => {
                                     const ratio = animFrameCount > 1 ? (idx / (animFrameCount - 1)) : 0;
-                                    const time = ratio * animDuration;
+                                    const time = ratio * animExtractDuration;
                                     const percent = (time / Math.max(0.1, videoDuration)) * 100;
                                     return (
                                       <div 
@@ -2535,7 +2538,7 @@ Description: アニメーションLINEスタンプ (APNG)
                                 <div className="flex justify-between items-center mt-1 text-[9px] text-gray-400 font-mono">
                                   <span>0.00s</span>
                                   <span className="text-primary-700 font-bold font-sans">
-                                    再生時間 {animDuration}秒
+                                    切り出し範囲 {animExtractDuration.toFixed(2)}秒 / 再生 {animDuration}秒
                                   </span>
                                   <span>{videoDuration.toFixed(2)}s</span>
                                 </div>
@@ -2655,6 +2658,29 @@ Description: アニメーションLINEスタンプ (APNG)
                             {animFps} コマ/秒
                           </span>
                         </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between items-center">
+                          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                            切り出し範囲
+                          </label>
+                          <span className="text-xs font-bold text-gray-700 font-mono">
+                            0.0 - {animExtractDuration.toFixed(1)} 秒
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.1"
+                          max={Math.max(0.1, videoDuration)}
+                          step="0.1"
+                          value={Math.min(animExtractDuration, Math.max(0.1, videoDuration))}
+                          onChange={(e) => setAnimExtractDuration(Number(e.target.value))}
+                          className="w-full accent-primary-600"
+                        />
+                        <span className="text-[10px] text-gray-400 block">
+                          ※元動画の0秒からこの秒数までを使い、選んだコマ数を均等に抜き出します。
+                        </span>
                       </div>
 
                       <div className="space-y-1">
