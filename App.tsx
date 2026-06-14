@@ -13,7 +13,7 @@ import { ManualCropModal } from './components/ManualCropModal';
 import { TextSetModal } from './components/TextSetModal';
 import { removeGridLines, detectGridLines } from './lib/gridRemoval';
 import JSZip from 'jszip';
-import { hexToRgb, removeBackgroundForAnimFrame, assembleAPNG, AnimatedStampResult } from './lib/animatedStampService';
+import { hexToRgb, removeBackgroundForAnimFrame, encodeAutoAPNG, AnimatedStampResult, APNGInfo } from './lib/animatedStampService';
 
 const MAX_APNG_BYTES = 1024 * 1024;
 const LINE_APNG_WIDTH = 320;
@@ -150,26 +150,9 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
   );
 });
 
-const reduceCanvasColors = (canvas: HTMLCanvasElement, bitsPerChannel: number) => {
-  if (bitsPerChannel >= 8) return;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return;
-
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imageData.data;
-  const levels = Math.max(2, 2 ** bitsPerChannel);
-  const step = 255 / (levels - 1);
-
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = Math.round(data[i] / step) * step;
-    data[i + 1] = Math.round(data[i + 1] / step) * step;
-    data[i + 2] = Math.round(data[i + 2] / step) * step;
-    if (data[i + 3] > 0 && data[i + 3] < 255) {
-      data[i + 3] = Math.round(data[i + 3] / step) * step;
-    }
-  }
-
-  ctx.putImageData(imageData, 0, 0);
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes}B`;
+  return `${(bytes / 1024).toFixed(0)}KB`;
 };
 
 async function sha256(message: string) {
@@ -551,7 +534,7 @@ const compileAnimatedStamp = async (
     sourceWidth?: number;
     sourceHeight?: number;
   }
-): Promise<Blob> => {
+): Promise<{ blob: Blob; info: APNGInfo }> => {
   const numFrames = rawFrames.length;
 
   // Preload all overlays/layers first (common layers + frame-specific layers)
@@ -585,8 +568,8 @@ const compileAnimatedStamp = async (
     );
   }
 
-  const buildBlob = async (colorBits: number, frameStep: number) => {
-    const frameBufs: ArrayBuffer[] = [];
+  const buildBlob = async (frameStep: number) => {
+    const frameData: Uint8Array[] = [];
 
     for (let f = 0; f < numFrames; f += frameStep) {
       const rawFrameImg = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -666,50 +649,43 @@ const compileAnimatedStamp = async (
         layerImages
       );
       ctx.restore();
-      reduceCanvasColors(canvas, colorBits);
-
-      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
-      if (!blob) throw new Error('Failed to generate frame blob');
-      const buffer = await blob.arrayBuffer();
-      frameBufs.push(buffer);
+      const imageData = ctx.getImageData(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
+      frameData.push(new Uint8Array(imageData.data));
     }
 
-    const adjustedFps = Math.max(1, Math.round(config.fps / frameStep));
-    return assembleAPNG(frameBufs, adjustedFps, config.playbackDuration);
+    const duration = config.playbackDuration ?? Math.max(1, Math.min(4, Math.round(frameData.length / Math.max(1, config.fps))));
+    const delay = (duration * 1000) / frameData.length;
+    const delays = new Array(frameData.length).fill(delay);
+    return encodeAutoAPNG({
+      w: LINE_APNG_WIDTH,
+      h: LINE_APNG_HEIGHT,
+      frames: frameData,
+      delays,
+      loops: 0,
+      maxBytes: MAX_APNG_BYTES,
+    });
   };
 
-  let bestBlob: Blob | null = null;
-  const colorBitsCandidates = [8, 7, 6, 5, 4];
   const frameSteps = [1, 2, 3, 4, 5, 6, 8];
+  let best: APNGInfo | null = null;
 
-  for (const colorBits of colorBitsCandidates) {
-    const blob = await buildBlob(colorBits, 1);
-    if (!bestBlob || blob.size < bestBlob.size) {
-      bestBlob = blob;
+  for (const frameStep of frameSteps) {
+    const outputFrameCount = Math.ceil(numFrames / frameStep);
+    if (outputFrameCount < 5) continue;
+    const result = await buildBlob(frameStep);
+    if (!best || result.info.byteSize < best.byteSize) {
+      best = result.info;
     }
-    if (blob.size <= MAX_APNG_BYTES) {
-      if (colorBits !== 8) {
-        console.log(`Optimized APNG to ${blob.size} bytes (color bits ${colorBits})`);
+    if (!result.over && result.bytes.length <= MAX_APNG_BYTES) {
+      if (frameStep !== 1 || result.info.colorReduced) {
+        console.log(`Optimized APNG to ${result.bytes.length} bytes (frame step ${frameStep}, colors ${result.colors || 'full'})`);
       }
-      return blob;
-    }
-  }
-
-  for (const frameStep of frameSteps.slice(1)) {
-    for (const colorBits of colorBitsCandidates) {
-      const blob = await buildBlob(colorBits, frameStep);
-      if (!bestBlob || blob.size < bestBlob.size) {
-        bestBlob = blob;
-      }
-      if (blob.size <= MAX_APNG_BYTES) {
-        console.log(`Optimized APNG to ${blob.size} bytes (frame step ${frameStep}, color bits ${colorBits})`);
-        return blob;
-      }
+      return { blob: result.blob, info: result.info };
     }
   }
 
-  console.warn(`APNG remains above 1MB after optimization (${bestBlob?.size || 0} bytes).`);
-  throw new Error('1MB以内にできません。コマ数を減らすか、画像の内容をシンプルにしてください。');
+  console.warn(`APNG remains above 1MB after optimization (${best?.byteSize || 0} bytes).`);
+  throw new Error('容量超過: 1MB以内にできません。コマ数を減らすか、画像の内容をシンプルにしてください。');
 };
 
   const buildOptimizedAnimatedCutout = async (
@@ -719,9 +695,9 @@ const compileAnimatedStamp = async (
     bgColor: string,
     tolerance: number,
     algorithm: 'chromakey' | 'floodfill'
-  ): Promise<{ blob: Blob; frameBuffers: ArrayBuffer[]; dataUrls: string[]; fps: number }> => {
-    const build = async (colorBits: number, frameStep: number) => {
-      const frameBuffers: ArrayBuffer[] = [];
+  ): Promise<{ blob: Blob; dataUrls: string[]; fps: number; info: APNGInfo }> => {
+    const build = async (frameStep: number) => {
+      const frameData: Uint8Array[] = [];
       const dataUrls: string[] = [];
 
       for (let f = 0; f < originalFrames.length; f += frameStep) {
@@ -753,58 +729,55 @@ const compileAnimatedStamp = async (
           algorithm
         );
         ctx.putImageData(processedImgData, 0, 0);
-        reduceCanvasColors(canvas, colorBits);
 
-        const pngBlob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
-        if (!pngBlob) continue;
-        frameBuffers.push(await pngBlob.arrayBuffer());
+        const finalImageData = ctx.getImageData(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
+        frameData.push(new Uint8Array(finalImageData.data));
         dataUrls.push(canvas.toDataURL('image/png'));
       }
 
-      const adjustedFps = Math.max(1, Math.round(fps / frameStep));
+      const delay = (playbackDuration * 1000) / frameData.length;
+      const result = await encodeAutoAPNG({
+        w: LINE_APNG_WIDTH,
+        h: LINE_APNG_HEIGHT,
+        frames: frameData,
+        delays: new Array(frameData.length).fill(delay),
+        loops: 0,
+        maxBytes: MAX_APNG_BYTES,
+      });
       return {
-        blob: assembleAPNG(frameBuffers, adjustedFps, playbackDuration),
-        frameBuffers,
+        blob: result.blob,
         dataUrls,
-        fps: adjustedFps
+        fps: frameData.length / playbackDuration,
+        info: result.info,
+        over: result.over,
+        bytes: result.bytes,
+        colors: result.colors,
       };
     };
 
-    let best: { blob: Blob; frameBuffers: ArrayBuffer[]; dataUrls: string[]; fps: number } | null = null;
-    const colorBitsCandidates = [8, 7, 6, 5, 4];
+    let best: { info: APNGInfo } | null = null;
     const frameSteps = [1, 2, 3, 4, 5, 6, 8];
 
-    for (const colorBits of colorBitsCandidates) {
-      const result = await build(colorBits, 1);
-      if (!best || result.blob.size < best.blob.size) {
+    for (const frameStep of frameSteps) {
+      const outputFrameCount = Math.ceil(originalFrames.length / frameStep);
+      if (outputFrameCount < 5) continue;
+      const result = await build(frameStep);
+      if (!best || result.info.byteSize < best.info.byteSize) {
         best = result;
       }
-      if (result.blob.size <= MAX_APNG_BYTES) {
-        if (colorBits !== 8) {
-          console.log(`Optimized cutout APNG to ${result.blob.size} bytes (color bits ${colorBits})`);
+      if (!result.over && result.bytes.length <= MAX_APNG_BYTES) {
+        if (frameStep !== 1 || result.info.colorReduced) {
+          console.log(`Optimized cutout APNG to ${result.bytes.length} bytes (frame step ${frameStep}, colors ${result.colors || 'full'})`);
         }
         return result;
-      }
-    }
-
-    for (const frameStep of frameSteps.slice(1)) {
-      for (const colorBits of colorBitsCandidates) {
-        const result = await build(colorBits, frameStep);
-        if (!best || result.blob.size < best.blob.size) {
-          best = result;
-        }
-        if (result.blob.size <= MAX_APNG_BYTES) {
-          console.log(`Optimized cutout APNG to ${result.blob.size} bytes (frame step ${frameStep}, color bits ${colorBits})`);
-          return result;
-        }
       }
     }
 
     if (!best) {
       throw new Error('APNGの生成に失敗しました');
     }
-    console.warn(`Cutout APNG remains above 1MB after optimization (${best.blob.size} bytes).`);
-    throw new Error('1MB以内にできません。コマ数を減らすか、画像の内容をシンプルにしてください。');
+    console.warn(`Cutout APNG remains above 1MB after optimization (${best.info.byteSize} bytes).`);
+    throw new Error('容量超過: 1MB以内にできません。コマ数を減らすか、画像の内容をシンプルにしてください。');
   };
 
   const recompileAnimatedStamp = async (stamp: Stamp): Promise<Stamp> => {
@@ -813,7 +786,7 @@ const compileAnimatedStamp = async (
     }
 
     try {
-      const apngBlob = await compileAnimatedStamp(stamp.rawFrames, {
+      const compiled = await compileAnimatedStamp(stamp.rawFrames, {
         scale: stamp.scale,
         rotation: stamp.rotation ?? 0,
         offsetX: stamp.offsetX,
@@ -842,16 +815,18 @@ const compileAnimatedStamp = async (
       const reader = new FileReader();
       const dataUrl = await new Promise<string>((resolve) => {
         reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(apngBlob);
+        reader.readAsDataURL(compiled.blob);
       });
 
       return {
         ...stamp,
-        dataUrl
+        dataUrl,
+        apngInfo: compiled.info,
+        fps: compiled.info.frameCount / (stamp.playbackDuration ?? compiled.info.totalDuration)
       };
     } catch (e) {
       console.error('APNG recompilation error:', e);
-      return stamp;
+      throw e;
     }
   };
 
@@ -1046,7 +1021,8 @@ const compileAnimatedStamp = async (
           rawFrames: finalFramesDataUrls,
           rawOriginalFrames: stampRawOriginalFrames[bIdx],
           fps: finalFramesDataUrls.length / animDuration,
-          playbackDuration: animDuration
+          playbackDuration: animDuration,
+          apngInfo: optimized.info
         });
       }
 
@@ -2041,7 +2017,8 @@ Description: アニメーションLINEスタンプ (APNG)
           rawFrames: finalFramesDataUrls,
           rawOriginalFrames: stampRawOriginalFrames,
           fps: finalFramesDataUrls.length / animDuration,
-          playbackDuration: animDuration
+          playbackDuration: animDuration,
+          apngInfo: optimized.info
         };
 
         if (targetReplaceId) {
@@ -3004,6 +2981,13 @@ Description: アニメーションLINEスタンプ (APNG)
                               </div>
                               <div className="font-bold text-gray-500 text-sm">{stamp.isExcluded ? '除外' : `No.${String(index + 1).padStart(2,'0')}`}</div>
                               <div className="flex gap-1 h-5">{mainConfig?.id === stamp.id && <span className="bg-yellow-400 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow flex items-center">MAIN</span>}{tabConfig?.id === stamp.id && <span className="bg-blue-400 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow flex items-center">TAB</span>}</div>
+                          </div>
+                        )}
+                        {stamp.isAnimated && stamp.apngInfo && cardSize >= 140 && (
+                          <div className="px-3 py-2 bg-white border-t text-[10px] leading-4 text-gray-500 font-mono">
+                            <div>{stamp.apngInfo.width}x{stamp.apngInfo.height} / {formatBytes(stamp.apngInfo.byteSize)} / {stamp.apngInfo.frameCount}F</div>
+                            <div>{stamp.apngInfo.totalDuration.toFixed(2)}s / delay {stamp.apngInfo.delay}/1000 / loop {stamp.apngInfo.loops}</div>
+                            <div>色数削減: {stamp.apngInfo.colorReduced ? `${stamp.apngInfo.colors}色` : 'なし'}</div>
                           </div>
                         )}
                     </div>

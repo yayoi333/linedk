@@ -1,10 +1,6 @@
 // APNG (Animated PNG) generation and frame background removal service
 // Developed in 2026 for high-quality animated LINE stamp creation.
 
-export interface AnimatedStampFrame {
-  pngBuffer: ArrayBuffer;
-}
-
 export interface AnimatedStampResult {
   id: string;
   cellIndex: number;
@@ -135,42 +131,26 @@ export function removeBackgroundForAnimFrame(
   return imageData;
 }
 
-interface PNGChunk {
-  length: number;
-  type: string;
-  data: Uint8Array;
-  crc: number;
+export interface APNGInfo {
+  width: number;
+  height: number;
+  byteSize: number;
+  frameCount: number;
+  totalDuration: number;
+  delay: number;
+  loops: number;
+  colors: number;
+  colorReduced: boolean;
 }
 
-/**
- * Parses raw PNG ArrayBuffer into structural chunks.
- */
-export function parsePNG(buffer: ArrayBuffer): PNGChunk[] {
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-  const chunks: PNGChunk[] = [];
-
-  // Skip standard 8-byte PNG signature
-  let pos = 8;
-  while (pos < buffer.byteLength) {
-    if (pos + 8 > buffer.byteLength) break;
-    const length = view.getUint32(pos, false);
-    const type = String.fromCharCode(
-      bytes[pos + 4],
-      bytes[pos + 5],
-      bytes[pos + 6],
-      bytes[pos + 7]
-    );
-    if (pos + 12 + length > buffer.byteLength) break;
-    const data = bytes.subarray(pos + 8, pos + 8 + length);
-    const crc = view.getUint32(pos + 8 + length, false);
-    chunks.push({ length, type, data, crc });
-    pos += 12 + length;
-  }
-  return chunks;
+export interface APNGEncodeResult {
+  bytes: Uint8Array;
+  blob: Blob;
+  colors: number;
+  over: boolean;
+  info: APNGInfo;
 }
 
-// Generate fast lookup CRC32 table
 const crcTable = (() => {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
@@ -183,152 +163,377 @@ const crcTable = (() => {
   return table;
 })();
 
-/**
- * Calculates Chunk CRC32 according to ANSI X3.66 specifications.
- */
-export function calculateCRC32(type: string, data: Uint8Array): number {
+function crc32(buf: Uint8Array, off: number, len: number): number {
   let crc = 0xffffffff;
-  for (let i = 0; i < 4; i++) {
-    crc = (crc >>> 8) ^ crcTable[(crc ^ type.charCodeAt(i)) & 0xff];
-  }
-  for (let i = 0; i < data.length; i++) {
-    crc = (crc >>> 8) ^ crcTable[(crc ^ data[i]) & 0xff];
+  for (let i = 0; i < len; i++) {
+    crc = crcTable[(crc ^ buf[off + i]) & 0xff] ^ (crc >>> 8);
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function getFrameDelay(fps: number, frameCount: number, durationSeconds?: number): { numerator: number; denominator: number } {
-  if (durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0) {
-    return {
-      numerator: Math.max(1, Math.round((durationSeconds * 1000) / frameCount)),
-      denominator: 1000,
-    };
+async function deflateBytes(u8: Uint8Array): Promise<Uint8Array> {
+  const compressionCtor = globalThis.CompressionStream;
+  if (!compressionCtor) {
+    throw new Error('このブラウザはAPNG圧縮に必要なCompressionStreamに対応していません。');
   }
-
-  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 1;
-  return {
-    numerator: Math.max(1, Math.round(1000 / safeFps)),
-    denominator: 1000,
-  };
+  const stream = new Blob([u8]).stream().pipeThrough(new compressionCtor('deflate'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/**
- * Combines parsed PNG frame ArrayBuffers to assemble a valid Animated PNG (APNG) Blob.
- * Correctly configures acTL (Animation Control), fcTL (Frame Control), and fdAT (Frame Data Chunks).
- */
-export function assembleAPNG(frames: ArrayBuffer[], fps: number, durationSeconds?: number): Blob {
+function pngChunk(type: string, data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(12 + data.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) {
+    out[4 + i] = type.charCodeAt(i);
+  }
+  out.set(data, 8);
+  dv.setUint32(8 + data.length, crc32(out, 4, 4 + data.length));
+  return out;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+export function quantizeFrames(frames: Uint8Array[], maxColors: number): { palette: number[][]; indexed: Uint8Array[] } {
+  const counts = new Map<number, number>();
+  for (const frame of frames) {
+    const u32 = new Uint32Array(frame.buffer, frame.byteOffset, frame.byteLength >> 2);
+    for (let i = 0; i < u32.length; i++) {
+      let pixel = u32[i];
+      if ((pixel >>> 24) < 8) pixel = 0;
+      counts.set(pixel, (counts.get(pixel) || 0) + 1);
+    }
+  }
+
+  const hasTrans = counts.has(0);
+  const opaque: Array<{ r: number; g: number; b: number; a: number; n: number }> = [];
+  for (const [pixel, count] of counts) {
+    if (pixel === 0) continue;
+    opaque.push({
+      r: pixel & 255,
+      g: (pixel >>> 8) & 255,
+      b: (pixel >>> 16) & 255,
+      a: pixel >>> 24,
+      n: count,
+    });
+  }
+
+  const budget = Math.max(1, maxColors - (hasTrans ? 1 : 0));
+  const boxes: typeof opaque[] = opaque.length ? [opaque] : [];
+  const range = (box: typeof opaque) => {
+    const mn = [255, 255, 255, 255];
+    const mx = [0, 0, 0, 0];
+    for (const color of box) {
+      const values = [color.r, color.g, color.b, color.a];
+      for (let k = 0; k < 4; k++) {
+        if (values[k] < mn[k]) mn[k] = values[k];
+        if (values[k] > mx[k]) mx[k] = values[k];
+      }
+    }
+    let ch = 0;
+    let width = -1;
+    for (let k = 0; k < 4; k++) {
+      if (mx[k] - mn[k] > width) {
+        width = mx[k] - mn[k];
+        ch = k;
+      }
+    }
+    return { ch, width };
+  };
+
+  while (boxes.length < budget) {
+    let bestIndex = -1;
+    let bestScore = 0;
+    for (let i = 0; i < boxes.length; i++) {
+      if (boxes[i].length < 2) continue;
+      const { width } = range(boxes[i]);
+      let population = 0;
+      for (const color of boxes[i]) population += color.n;
+      const score = width * Math.sqrt(population);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) break;
+    const box = boxes[bestIndex];
+    const { ch } = range(box);
+    const key = ['r', 'g', 'b', 'a'][ch] as 'r' | 'g' | 'b' | 'a';
+    box.sort((a, b) => a[key] - b[key]);
+    let total = 0;
+    for (const color of box) total += color.n;
+    let acc = 0;
+    let cut = 1;
+    for (let i = 0; i < box.length - 1; i++) {
+      acc += box[i].n;
+      if (acc >= total / 2) {
+        cut = i + 1;
+        break;
+      }
+    }
+    boxes.splice(bestIndex, 1, box.slice(0, cut), box.slice(cut));
+  }
+
+  const palette: number[][] = [];
+  if (hasTrans) palette.push([0, 0, 0, 0]);
+  for (const box of boxes) {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let a = 0;
+    let n = 0;
+    for (const color of box) {
+      r += color.r * color.n;
+      g += color.g * color.n;
+      b += color.b * color.n;
+      a += color.a * color.n;
+      n += color.n;
+    }
+    palette.push([Math.round(r / n), Math.round(g / n), Math.round(b / n), Math.round(a / n)]);
+  }
+
+  const lookup = new Map<number, number>();
+  const nearest = (pixel: number) => {
+    const hit = lookup.get(pixel);
+    if (hit !== undefined) return hit;
+    const r = pixel & 255;
+    const g = (pixel >>> 8) & 255;
+    const b = (pixel >>> 16) & 255;
+    const a = pixel >>> 24;
+    let bestIndex = 0;
+    let bestDistance = Infinity;
+    for (let i = 0; i < palette.length; i++) {
+      const color = palette[i];
+      const distance = (color[0] - r) ** 2 + (color[1] - g) ** 2 + (color[2] - b) ** 2 + 2 * (color[3] - a) ** 2;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    }
+    lookup.set(pixel, bestIndex);
+    return bestIndex;
+  };
+
+  if (hasTrans) lookup.set(0, 0);
+  const indexed = frames.map((frame) => {
+    const u32 = new Uint32Array(frame.buffer, frame.byteOffset, frame.byteLength >> 2);
+    const out = new Uint8Array(u32.length);
+    for (let i = 0; i < u32.length; i++) {
+      let pixel = u32[i];
+      if ((pixel >>> 24) < 8) pixel = 0;
+      out[i] = nearest(pixel);
+    }
+    return out;
+  });
+
+  return { palette, indexed };
+}
+
+export function diffRect(a: Uint8Array, b: Uint8Array, w: number, h: number, bpp: number): { x: number; y: number; w: number; h: number } | null {
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    const rowOffset = y * w * bpp;
+    for (let x = 0; x < w; x++) {
+      const offset = rowOffset + x * bpp;
+      let same = true;
+      for (let k = 0; k < bpp; k++) {
+        if (a[offset + k] !== b[offset + k]) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+}
+
+export function regionRaw(img: Uint8Array, w: number, rect: { x: number; y: number; w: number; h: number }, bpp: number): Uint8Array {
+  const out = new Uint8Array(rect.h * (1 + rect.w * bpp));
+  let position = 0;
+  for (let y = 0; y < rect.h; y++) {
+    out[position++] = 0;
+    const src = ((rect.y + y) * w + rect.x) * bpp;
+    out.set(img.subarray(src, src + rect.w * bpp), position);
+    position += rect.w * bpp;
+  }
+  return out;
+}
+
+export async function buildAPNG({
+  w,
+  h,
+  frames,
+  delays,
+  loops,
+  colors,
+}: {
+  w: number;
+  h: number;
+  frames: Uint8Array[];
+  delays: number[];
+  loops: number;
+  colors: number;
+}): Promise<Uint8Array> {
   if (frames.length === 0) {
     throw new Error('APNG creation requires at least one frame.');
   }
 
-  const chunksByFrame = frames.map(f => parsePNG(f));
-  const outputParts: Uint8Array[] = [];
-
-  // 1. Write official PNG signature (8 bytes)
-  outputParts.push(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
-
-  // 2. Extract and write IHDR from first frame
-  const frame0Chunks = chunksByFrame[0];
-  const ihdrChunk = frame0Chunks.find(c => c.type === 'IHDR');
-  if (!ihdrChunk) {
-    throw new Error('Specified PNG frames lack a valid IHDR chunk.');
+  let imgs: Uint8Array[];
+  let bpp: number;
+  let palette: number[][] | null = null;
+  if (colors > 0) {
+    const quantized = quantizeFrames(frames, colors);
+    imgs = quantized.indexed;
+    palette = quantized.palette;
+    bpp = 1;
+  } else {
+    imgs = frames;
+    bpp = 4;
   }
 
-  // helper function to format and stage chunks to output
-  function writeChunk(type: string, data: Uint8Array) {
-    const header = new Uint8Array(8);
-    const view = new DataView(header.buffer);
-    view.setUint32(0, data.length, false);
-    for (let i = 0; i < 4; i++) {
-      header[4 + i] = type.charCodeAt(i);
-    }
-    const crc = calculateCRC32(type, data);
-    const footer = new Uint8Array(4);
-    const footerView = new DataView(footer.buffer);
-    footerView.setUint32(0, crc, false);
+  const u32be = (...values: number[]) => {
+    const data = new Uint8Array(values.length * 4);
+    const view = new DataView(data.buffer);
+    values.forEach((value, index) => view.setUint32(index * 4, value));
+    return data;
+  };
 
-    outputParts.push(header);
-    outputParts.push(data);
-    outputParts.push(footer);
+  const ihdr = new Uint8Array(13);
+  const ihdrView = new DataView(ihdr.buffer);
+  ihdrView.setUint32(0, w);
+  ihdrView.setUint32(4, h);
+  ihdr[8] = 8;
+  ihdr[9] = palette ? 3 : 6;
+
+  const parts: Uint8Array[] = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])];
+  parts.push(pngChunk('IHDR', ihdr));
+  parts.push(pngChunk('acTL', u32be(frames.length, loops)));
+
+  if (palette) {
+    const plte = new Uint8Array(palette.length * 3);
+    const trns = new Uint8Array(palette.length);
+    palette.forEach((color, index) => {
+      plte.set(color.slice(0, 3), index * 3);
+      trns[index] = color[3];
+    });
+    parts.push(pngChunk('PLTE', plte));
+    parts.push(pngChunk('tRNS', trns));
   }
 
-  writeChunk('IHDR', ihdrChunk.data);
+  let sequence = 0;
+  for (let i = 0; i < imgs.length; i++) {
+    const rect = i === 0
+      ? { x: 0, y: 0, w, h }
+      : (diffRect(imgs[i - 1], imgs[i], w, h, bpp) || { x: 0, y: 0, w: 1, h: 1 });
 
-  // 3. Write acTL (Animation Control Chunk)
-  const numFrames = frames.length;
-  const numPlays = 0; // Infinite loop parameter
-  const acTlPayload = new Uint8Array(8);
-  const acTlView = new DataView(acTlPayload.buffer);
-  acTlView.setUint32(0, numFrames, false);
-  acTlView.setUint32(4, numPlays, false);
-  writeChunk('acTL', acTlPayload);
+    const fctl = new Uint8Array(26);
+    const view = new DataView(fctl.buffer);
+    view.setUint32(0, sequence++);
+    view.setUint32(4, rect.w);
+    view.setUint32(8, rect.h);
+    view.setUint32(12, rect.x);
+    view.setUint32(16, rect.y);
+    view.setUint16(20, Math.max(1, Math.round(delays[i])));
+    view.setUint16(22, 1000);
+    fctl[24] = 0;
+    fctl[25] = 0;
+    parts.push(pngChunk('fcTL', fctl));
 
-  // Read dimensions from original IHDR payload
-  const ihdrView = new DataView(
-    ihdrChunk.data.buffer,
-    ihdrChunk.data.byteOffset,
-    ihdrChunk.data.byteLength
-  );
-  const width = ihdrView.getUint32(0, false);
-  const height = ihdrView.getUint32(4, false);
-
-  let sequenceNumber = 0;
-  const frameDelay = getFrameDelay(fps, numFrames, durationSeconds);
-
-  // 4. Sequence all frames
-  for (let i = 0; i < numFrames; i++) {
-    const fChunks = chunksByFrame[i];
-
-    // Build fcTL frame controller chunk
-    const fcTlPayload = new Uint8Array(26);
-    const fcTlView = new DataView(fcTlPayload.buffer);
-    fcTlView.setUint32(0, sequenceNumber++, false); // Sequence sequence number
-    fcTlView.setUint32(4, width, false); // Width dimension
-    fcTlView.setUint32(8, height, false); // Height dimension
-    fcTlView.setUint32(12, 0, false); // X coordinate offset
-    fcTlView.setUint16(20, frameDelay.numerator, false); // Numerator of delay
-    fcTlView.setUint16(22, frameDelay.denominator, false); // Denominator of delay
-    fcTlView.setUint8(24, 0); // dispose_op: 0 (APNG_DISPOSE_OP_NONE) for full-canvas frames
-    fcTlView.setUint8(25, 0); // blend_op: 0 (APNG_BLEND_OP_SOURCE) to fully overwrite source RGBA values
-
-    writeChunk('fcTL', fcTlPayload);
-
-    // Filter for IDAT pixel data chunking
-    const idatChunks = fChunks.filter(c => c.type === 'IDAT');
-
+    const compressed = await deflateBytes(regionRaw(imgs[i], w, rect, bpp));
     if (i === 0) {
-      // Frame 0 has standard IDAT chunk(s) for backward rendering compatibility
-      for (const idat of idatChunks) {
-        writeChunk('IDAT', idat.data);
-      }
+      parts.push(pngChunk('IDAT', compressed));
     } else {
-      // Frames i > 0 map onto fdAT frame data chunks
-      for (const idat of idatChunks) {
-        const fdAtPayload = new Uint8Array(4 + idat.data.length);
-        const fdAtView = new DataView(fdAtPayload.buffer);
-        fdAtView.setUint32(0, sequenceNumber++, false); // Sequence chunk
-        fdAtPayload.set(idat.data, 4); // Copy original IDAT contents
-        writeChunk('fdAT', fdAtPayload);
-      }
+      const data = new Uint8Array(4 + compressed.length);
+      new DataView(data.buffer).setUint32(0, sequence++);
+      data.set(compressed, 4);
+      parts.push(pngChunk('fdAT', data));
     }
   }
 
-  // 5. Clone supporting non-pixel chunks from Frame 0 (excluding metadata we override)
-  for (const chunk of frame0Chunks) {
-    if (
-      chunk.type !== 'IHDR' &&
-      chunk.type !== 'IDAT' &&
-      chunk.type !== 'IEND' &&
-      chunk.type !== 'acTL' &&
-      chunk.type !== 'fcTL' &&
-      chunk.type !== 'fdAT'
-    ) {
-      writeChunk(chunk.type, chunk.data);
+  parts.push(pngChunk('IEND', new Uint8Array(0)));
+  return concatBytes(parts);
+}
+
+export async function encodeAutoAPNG({
+  w,
+  h,
+  frames,
+  delays,
+  loops,
+  maxBytes = 1024 * 1024,
+}: {
+  w: number;
+  h: number;
+  frames: Uint8Array[];
+  delays: number[];
+  loops: number;
+  maxBytes?: number;
+}): Promise<APNGEncodeResult> {
+  let best: { bytes: Uint8Array; colors: number } | null = null;
+  for (const colors of [0, 256, 128, 64, 32, 16]) {
+    const bytes = await buildAPNG({ w, h, frames, delays, loops, colors });
+    if (!best || bytes.length < best.bytes.length) best = { bytes, colors };
+    if (bytes.length <= maxBytes) {
+      const delay = Math.max(1, Math.round(delays[0] ?? 0));
+      return {
+        bytes,
+        blob: new Blob([bytes], { type: 'image/png' }),
+        colors,
+        over: false,
+        info: {
+          width: w,
+          height: h,
+          byteSize: bytes.length,
+          frameCount: frames.length,
+          totalDuration: (delay * frames.length) / 1000,
+          delay,
+          loops,
+          colors,
+          colorReduced: colors > 0,
+        },
+      };
     }
   }
 
-  // 6. Conclude with IEND termination chunk
-  writeChunk('IEND', new Uint8Array(0));
-
-  return new Blob(outputParts, { type: 'image/png' });
+  if (!best) {
+    throw new Error('APNGの生成に失敗しました');
+  }
+  const delay = Math.max(1, Math.round(delays[0] ?? 0));
+  return {
+    bytes: best.bytes,
+    blob: new Blob([best.bytes], { type: 'image/png' }),
+    colors: best.colors,
+    over: true,
+    info: {
+      width: w,
+      height: h,
+      byteSize: best.bytes.length,
+      frameCount: frames.length,
+      totalDuration: (delay * frames.length) / 1000,
+      delay,
+      loops,
+      colors: best.colors,
+      colorReduced: best.colors > 0,
+    },
+  };
 }
