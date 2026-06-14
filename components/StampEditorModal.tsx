@@ -67,6 +67,7 @@ interface HistoryState {
     framesOffsetsY?: number[];
     framesFlipsH?: boolean[];
     framesFlipsV?: boolean[];
+    playbackDuration?: number;
 }
 
 export const StampEditorModal: React.FC<Props> = ({ 
@@ -100,6 +101,10 @@ export const StampEditorModal: React.FC<Props> = ({
   const [originalFrames, setOriginalFrames] = useState<string[]>([]);
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackDuration, setPlaybackDuration] = useState(() => {
+    const frameCount = stamp.rawFrames?.length || 1;
+    return Math.min(4, Math.max(0.5, frameCount / (stamp.fps || 10)));
+  });
   
   const [framesTextObjects, setFramesTextObjects] = useState<TextObject[][]>([]);
   const [framesImageLayers, setFramesImageLayers] = useState<ImageLayerObject[][]>([]);
@@ -430,6 +435,7 @@ export const StampEditorModal: React.FC<Props> = ({
         setOriginalFrames(initOriginalFrames);
 
         setCurrentFrameIndex(0);
+        setPlaybackDuration(Math.min(4, Math.max(0.5, N / (stamp.fps || 10))));
 
         fTexts = stamp.textObjectsFrames || Array.from({ length: N }, () => []);
         fImages = stamp.imageLayersFrames || Array.from({ length: N }, () => []);
@@ -493,6 +499,7 @@ export const StampEditorModal: React.FC<Props> = ({
           framesOffsetsY: stamp.isAnimated && stamp.rawFrames ? (stamp.offsetsYFrames || Array.from({ length: stamp.rawFrames.length }, () => stamp.offsetY)) : [],
           framesFlipsH: stamp.isAnimated && stamp.rawFrames ? (stamp.flipsHFrames || Array.from({ length: stamp.rawFrames.length }, () => stamp.flipH || false)) : [],
           framesFlipsV: stamp.isAnimated && stamp.rawFrames ? (stamp.flipsVFrames || Array.from({ length: stamp.rawFrames.length }, () => stamp.flipV || false)) : [],
+          playbackDuration: stamp.isAnimated && stamp.rawFrames ? Math.min(4, Math.max(0.5, stamp.rawFrames.length / (stamp.fps || 10))) : undefined,
       };
       setHistory([initialState]);
       setHistoryIndex(0);
@@ -551,12 +558,12 @@ export const StampEditorModal: React.FC<Props> = ({
   // Autoplay function for animated frames
   useEffect(() => {
     if (!isPlaying || !stamp.isAnimated || !frames || frames.length === 0) return;
-    const intervalTime = 1000 / (stamp.fps || 10);
+    const intervalTime = (playbackDuration * 1000) / frames.length;
     const timer = setInterval(() => {
       setCurrentFrameIndex(prev => (prev + 1) % frames.length);
     }, intervalTime);
     return () => clearInterval(timer);
-  }, [isPlaying, frames, stamp.fps, stamp.isAnimated]);
+  }, [isPlaying, frames, playbackDuration, stamp.isAnimated]);
 
   useEffect(() => {
     if (!isOpen || !canvasRef.current) return;
@@ -594,6 +601,7 @@ export const StampEditorModal: React.FC<Props> = ({
           framesOffsetsY: [...framesOffsetsY],
           framesFlipsH: [...framesFlipsH],
           framesFlipsV: [...framesFlipsV],
+          playbackDuration,
           ...newState
       };
       
@@ -615,6 +623,7 @@ export const StampEditorModal: React.FC<Props> = ({
           setOffset(prevState.offset);
           setTolerance(prevState.tolerance);
           setMainImageLayerOrder(prevState.mainImageLayerOrder);
+          if (prevState.playbackDuration !== undefined) setPlaybackDuration(prevState.playbackDuration);
           
           if (stamp.isAnimated && prevState.framesTextObjects) {
               setFramesTextObjects(prevState.framesTextObjects);
@@ -659,6 +668,7 @@ export const StampEditorModal: React.FC<Props> = ({
           setOffset(nextState.offset);
           setTolerance(nextState.tolerance);
           setMainImageLayerOrder(nextState.mainImageLayerOrder);
+          if (nextState.playbackDuration !== undefined) setPlaybackDuration(nextState.playbackDuration);
           
           if (stamp.isAnimated && nextState.framesTextObjects) {
               setFramesTextObjects(nextState.framesTextObjects);
@@ -1516,6 +1526,7 @@ export const StampEditorModal: React.FC<Props> = ({
               offsetsYFrames: framesOffsetsY,
               flipsHFrames: framesFlipsH,
               flipsVFrames: framesFlipsV,
+              fps: Math.max(1, syncedFrames.length / playbackDuration),
           } : {})
       };
       onSave(updatedStamp); onClose();
@@ -1829,6 +1840,21 @@ export const StampEditorModal: React.FC<Props> = ({
                             <span className="text-[11px] text-gray-500 font-bold">
                                 編集中: {currentFrameIndex + 1} / {frames.length}
                             </span>
+                            <label className="flex items-center gap-1.5 bg-white border border-gray-200 rounded px-2 py-1 text-[11px] font-bold text-gray-600">
+                                <span>再生秒数</span>
+                                <input
+                                    type="range"
+                                    min="0.5"
+                                    max="4"
+                                    step="0.1"
+                                    value={playbackDuration}
+                                    onChange={(e) => setPlaybackDuration(Number(e.target.value))}
+                                    onMouseUp={() => addToHistory({ playbackDuration })}
+                                    onTouchEnd={() => addToHistory({ playbackDuration })}
+                                    className="w-20 accent-primary-500"
+                                />
+                                <span className="font-mono w-9 text-right">{playbackDuration.toFixed(1)}s</span>
+                            </label>
                             <div className="flex items-center gap-1">
                                 <button
                                     type="button"

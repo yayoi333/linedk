@@ -362,7 +362,7 @@ export default function App() {
   const [animRows, setAnimRows] = useState(4);
   const [animCols, setAnimCols] = useState(4);
   const [animCropMethod, setAnimCropMethod] = useState<'auto' | 'grid'>('auto');
-  const [animFrameCount, setAnimFrameCount] = useState(15);
+  const [animFrameCount, setAnimFrameCount] = useState(20);
   const [animFps, setAnimFps] = useState(10);
   const [animDuration, setAnimDuration] = useState(2.0);
   const [animBgColor, setAnimBgColor] = useState('auto'); // 'auto' or hex code e.g. '#ffffff'
@@ -377,13 +377,10 @@ export default function App() {
   const [videoWidth, setVideoWidth] = useState(0);
   const [videoHeight, setVideoHeight] = useState(0);
 
-  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const loadAnimatedVideoFile = (file: File) => {
     if (!file.type.startsWith('video/')) {
       alert('動画ファイル (MP4, WebM等) を選択してください。');
-      return;
+      return false;
     }
 
     setAnimatedVideoFile(file);
@@ -402,6 +399,28 @@ export default function App() {
       setVideoWidth(video.videoWidth);
       setVideoHeight(video.videoHeight);
     };
+    return true;
+  };
+
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    loadAnimatedVideoFile(file);
+    e.target.value = '';
+  };
+
+  const handleVideoUploadForNewStamp = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ok = loadAnimatedVideoFile(file);
+    e.target.value = '';
+    if (!ok) return;
+    setShowSourceSelectModal(false);
+    setTimeout(() => {
+      setTargetReplaceId(null);
+      setManualCropInitialSourceId('animated-video');
+      setIsManualCropping(true);
+    }, 100);
   };
 
   const [livePreviewUrl, setLivePreviewUrl] = useState<string>('');
@@ -2271,7 +2290,7 @@ Description: アニメーションLINEスタンプ (APNG)
                         </div>
                         <div className="hidden sm:block h-6 w-px bg-gray-200"></div>
                         <button type="button" onClick={handleOpenNewStampFlow} className="flex items-center gap-1 bg-primary-600 hover:bg-primary-700 text-white font-bold py-1.5 px-3 rounded-full shadow transition-all text-xs sm:text-sm ml-auto sm:ml-0">
-                            <Plus size={16} />画像を追加
+                            <Plus size={16} />動画の追加
                         </button>
                     </div>
                 )}
@@ -2945,10 +2964,27 @@ Description: アニメーションLINEスタンプ (APNG)
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4">
            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 relative">
               <button onClick={() => setShowSourceSelectModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><XIcon size={24} /></button>
-              <h3 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2"><Plus size={24} className="text-primary-600" />画像を追加</h3>
+              <h3 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2"><Plus size={24} className="text-primary-600" />動画の追加</h3>
               <div className="space-y-4">
-                  <div className="relative border-2 border-dashed border-primary-200 bg-primary-50 rounded-xl p-6 hover:bg-primary-100 transition cursor-pointer text-center group"><input type="file" accept="image/png, image/jpeg" onChange={handleUploadForNewStamp} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" /><Upload className="mx-auto text-primary-500 mb-2" size={32} /><p className="font-bold text-primary-700">新しい画像をアップロード</p></div>
-                  {sourceImages.length > 0 && (<div><p className="text-xs font-bold text-gray-500 mb-2">アップロード済みから選択:</p><div className="grid grid-cols-4 gap-2">{sourceImages.map(img => (<button key={img.id} onClick={() => handleSelectExistingSource(img)} className="aspect-square rounded-lg border border-gray-200 overflow-hidden hover:ring-2 hover:ring-primary-500 transition relative"><img src={img.url} className="w-full h-full object-cover" alt="source" /></button>))}</div></div>)}
+                  <div className="relative border-2 border-dashed border-primary-200 bg-primary-50 rounded-xl p-6 hover:bg-primary-100 transition cursor-pointer text-center group">
+                    <input type="file" accept="video/mp4, video/webm, video/*" onChange={handleVideoUploadForNewStamp} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                    <Upload className="mx-auto text-primary-500 mb-2" size={32} />
+                    <p className="font-bold text-primary-700">動画をアップロードして手動切り出し</p>
+                    <p className="text-xs text-gray-400 mt-1">MP4 / WebM など</p>
+                  </div>
+                  {animatedVideoUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSourceSelectModal(false);
+                        openManualCrop(undefined, 'animated-video');
+                      }}
+                      className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2"
+                    >
+                      <Crop size={20} />
+                      現在の動画から手動で切り出す
+                    </button>
+                  )}
               </div>
            </div>
         </div>
