@@ -1,0 +1,5 @@
+{
+  "name": "Remix: 動画切り出しくんGithub",
+  "description": "一枚の動画から動くLINEスタンプを自動で切り出し、背景透過、サイズ調整、翻訳まで行う一気通貫ツールです。",
+  "requestFramePermissions": []
+}
