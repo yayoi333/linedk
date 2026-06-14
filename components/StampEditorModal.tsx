@@ -26,6 +26,8 @@ const backgroundOptions = [
     { value: '#f97316', label: 'オレンジ', color: 'bg-[#f97316]' },
 ];
 
+const LINE_ANIMATION_DURATIONS = [1, 2, 3, 4];
+
 interface Props {
   stamp: Stamp;
   isOpen: boolean;
@@ -103,7 +105,7 @@ export const StampEditorModal: React.FC<Props> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackDuration, setPlaybackDuration] = useState(() => {
     const frameCount = stamp.rawFrames?.length || 1;
-    return Math.min(4, Math.max(0.5, frameCount / (stamp.fps || 10)));
+    return stamp.playbackDuration ?? Math.min(4, Math.max(1, Math.round(frameCount / (stamp.fps || 10))));
   });
   
   const [framesTextObjects, setFramesTextObjects] = useState<TextObject[][]>([]);
@@ -435,7 +437,7 @@ export const StampEditorModal: React.FC<Props> = ({
         setOriginalFrames(initOriginalFrames);
 
         setCurrentFrameIndex(0);
-        setPlaybackDuration(Math.min(4, Math.max(0.5, N / (stamp.fps || 10))));
+        setPlaybackDuration(stamp.playbackDuration ?? Math.min(4, Math.max(1, Math.round(N / (stamp.fps || 10)))));
 
         fTexts = stamp.textObjectsFrames || Array.from({ length: N }, () => []);
         fImages = stamp.imageLayersFrames || Array.from({ length: N }, () => []);
@@ -499,7 +501,7 @@ export const StampEditorModal: React.FC<Props> = ({
           framesOffsetsY: stamp.isAnimated && stamp.rawFrames ? (stamp.offsetsYFrames || Array.from({ length: stamp.rawFrames.length }, () => stamp.offsetY)) : [],
           framesFlipsH: stamp.isAnimated && stamp.rawFrames ? (stamp.flipsHFrames || Array.from({ length: stamp.rawFrames.length }, () => stamp.flipH || false)) : [],
           framesFlipsV: stamp.isAnimated && stamp.rawFrames ? (stamp.flipsVFrames || Array.from({ length: stamp.rawFrames.length }, () => stamp.flipV || false)) : [],
-          playbackDuration: stamp.isAnimated && stamp.rawFrames ? Math.min(4, Math.max(0.5, stamp.rawFrames.length / (stamp.fps || 10))) : undefined,
+          playbackDuration: stamp.isAnimated && stamp.rawFrames ? (stamp.playbackDuration ?? Math.min(4, Math.max(1, Math.round(stamp.rawFrames.length / (stamp.fps || 10))))) : undefined,
       };
       setHistory([initialState]);
       setHistoryIndex(0);
@@ -1492,6 +1494,10 @@ export const StampEditorModal: React.FC<Props> = ({
   };
 
   const handleSave = () => {
+      if (stamp.isAnimated && !LINE_ANIMATION_DURATIONS.includes(playbackDuration)) {
+          alert('再生時間はLINEアニメーションスタンプ規定に合わせて、1秒 / 2秒 / 3秒 / 4秒 のいずれかを選択してください。');
+          return;
+      }
       if (pendingBrushRef.current) {
           cancelAnimationFrame(pendingBrushRef.current);
           pendingBrushRef.current = null;
@@ -1527,6 +1533,7 @@ export const StampEditorModal: React.FC<Props> = ({
               flipsHFrames: framesFlipsH,
               flipsVFrames: framesFlipsV,
               fps: Math.max(1, syncedFrames.length / playbackDuration),
+              playbackDuration,
           } : {})
       };
       onSave(updatedStamp); onClose();
@@ -1842,18 +1849,26 @@ export const StampEditorModal: React.FC<Props> = ({
                             </span>
                             <label className="flex items-center gap-1.5 bg-white border border-gray-200 rounded px-2 py-1 text-[11px] font-bold text-gray-600">
                                 <span>再生秒数</span>
-                                <input
-                                    type="range"
-                                    min="0.5"
-                                    max="4"
-                                    step="0.1"
-                                    value={playbackDuration}
-                                    onChange={(e) => setPlaybackDuration(Number(e.target.value))}
-                                    onMouseUp={() => addToHistory({ playbackDuration })}
-                                    onTouchEnd={() => addToHistory({ playbackDuration })}
-                                    className="w-20 accent-primary-500"
-                                />
-                                <span className="font-mono w-9 text-right">{playbackDuration.toFixed(1)}s</span>
+                                <div className="flex items-center gap-1">
+                                    {LINE_ANIMATION_DURATIONS.map((duration) => (
+                                        <button
+                                            key={duration}
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setPlaybackDuration(duration);
+                                                addToHistory({ playbackDuration: duration });
+                                            }}
+                                            className={`px-1.5 py-0.5 rounded border text-[10px] transition ${
+                                                playbackDuration === duration
+                                                    ? 'bg-primary-600 border-primary-600 text-white'
+                                                    : 'bg-white border-gray-200 text-gray-600 hover:bg-primary-50'
+                                            }`}
+                                        >
+                                            {duration}秒
+                                        </button>
+                                    ))}
+                                </div>
                             </label>
                             <div className="flex items-center gap-1">
                                 <button

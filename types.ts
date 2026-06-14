@@ -102,6 +102,7 @@ export interface Stamp {
   isAnimated?: boolean; // 動くスタンプかどうか
   rawFrames?: string[]; // 各フレームの透過済み画像 (base64)
   fps?: number; // アニメーション速度
+  playbackDuration?: number; // APNG全体の再生秒数（LINE規定: 1/2/3/4秒）
   rawOriginalFrames?: string[]; // 各コマの背景除去前の生画像 base64 配列
   textObjectsFrames?: TextObject[][]; // 各コマごとのテキスト配列の配列
   imageLayersFrames?: ImageLayerObject[][]; // 各コマごとの重ね合わせ画像配列の配列

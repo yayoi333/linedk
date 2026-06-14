@@ -201,7 +201,7 @@ export function calculateCRC32(type: string, data: Uint8Array): number {
  * Combines parsed PNG frame ArrayBuffers to assemble a valid Animated PNG (APNG) Blob.
  * Correctly configures acTL (Animation Control), fcTL (Frame Control), and fdAT (Frame Data Chunks).
  */
-export function assembleAPNG(frames: ArrayBuffer[], fps: number): Blob {
+export function assembleAPNG(frames: ArrayBuffer[], fps: number, durationSeconds?: number): Blob {
   if (frames.length === 0) {
     throw new Error('APNG creation requires at least one frame.');
   }
@@ -258,7 +258,10 @@ export function assembleAPNG(frames: ArrayBuffer[], fps: number): Blob {
   const height = ihdrView.getUint32(4, false);
 
   let sequenceNumber = 0;
-  const delayMs = Math.round(1000 / fps);
+  const delayMs = Math.max(
+    1,
+    Math.round(((durationSeconds ?? (frames.length / fps)) * 1000) / numFrames)
+  );
 
   // 4. Sequence all frames
   for (let i = 0; i < numFrames; i++) {
