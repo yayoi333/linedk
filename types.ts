@@ -120,6 +120,8 @@ export interface ExportConfig {
   rotation?: number; // Added rotation
   offsetX: number;
   offsetY: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
   customDataUrl?: string; // If edited specifically for Main/Tab (eraser etc)
   textObjects?: TextObject[]; // Added text objects for Main/Tab
   

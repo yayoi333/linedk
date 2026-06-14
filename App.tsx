@@ -29,6 +29,7 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
+    if (stamp.isAnimated) return;
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -74,6 +75,8 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
         rotation: frameRotation,
         offsetX: frameOffsetX,
         offsetY: frameOffsetY,
+        sourceWidth: stamp.width,
+        sourceHeight: stamp.height,
         textObjects: frameTextObjects,
         imageLayers: frameImageLayers,
         drawingStrokes: frameDrawingStrokes,
@@ -113,6 +116,23 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
     };
     img.src = stamp.isAnimated ? (stamp.rawFrames?.[frameIndex] || stamp.dataUrl) : stamp.dataUrl;
   }, [stamp, previewBg]);
+
+  if (stamp.isAnimated) {
+    return (
+      <div className="w-full h-full relative overflow-hidden">
+        {previewBg === 'checker' ? (
+          <div className="absolute inset-0 bg-[linear-gradient(45deg,#f3f4f6_25%,transparent_25%),linear-gradient(-45deg,#f3f4f6_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f3f4f6_75%),linear-gradient(-45deg,transparent_75%,#f3f4f6_75%)] bg-[size:10px_10px] bg-[position:0_0,0_5px,5px_-5px,-5px_0] bg-gray-50" />
+        ) : (
+          <div className="absolute inset-0" style={{ backgroundColor: previewBg }} />
+        )}
+        <img
+          src={stamp.dataUrl || stamp.rawFrames?.[0]}
+          alt="animated stamp preview"
+          className="relative z-10 w-full h-full object-contain pointer-events-none select-none"
+        />
+      </div>
+    );
+  }
 
   return (
     <canvas
@@ -477,6 +497,8 @@ const compileAnimatedStamp = async (
     offsetsYFrames?: number[];
     flipsHFrames?: boolean[];
     flipsVFrames?: boolean[];
+    sourceWidth?: number;
+    sourceHeight?: number;
   }
 ): Promise<Blob> => {
   const numFrames = rawFrames.length;
@@ -583,6 +605,8 @@ const compileAnimatedStamp = async (
           rotation: frameRotation,
           offsetX: frameOffsetX,
           offsetY: frameOffsetY,
+          sourceWidth: config.sourceWidth,
+          sourceHeight: config.sourceHeight,
           flipH: frameFlipH,
           flipV: frameFlipV,
           textObjects: frameTextObjects,
@@ -724,6 +748,8 @@ const compileAnimatedStamp = async (
         drawingStrokes: stamp.drawingStrokes ?? [],
         mainImageLayerOrder: stamp.mainImageLayerOrder ?? 100,
         fps: stamp.fps ?? 10,
+        sourceWidth: stamp.width,
+        sourceHeight: stamp.height,
         textObjectsFrames: stamp.textObjectsFrames,
         imageLayersFrames: stamp.imageLayersFrames,
         drawingStrokesFrames: stamp.drawingStrokesFrames,
@@ -2372,9 +2398,9 @@ Description: アニメーションLINEスタンプ (APNG)
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start">
+                <div className="grid grid-cols-1 gap-8 items-start max-w-3xl mx-auto">
                   {/* 設定設定 */}
-                  <div className="md:col-span-5 bg-white p-6 rounded-2xl shadow-xl border border-primary-100 space-y-6">
+                  <div className="bg-white p-6 rounded-2xl shadow-xl border border-primary-100 space-y-6">
                     <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2 pb-3 border-b border-gray-100">
                       <Settings size={20} className="text-primary-600" />
                       動くスタンプの設定
@@ -2433,17 +2459,17 @@ Description: アニメーションLINEスタンプ (APNG)
 
                           {/* 透過プレビュー & コマ数 timeline */}
                           {animatedVideoUrl && livePreviewUrl && (
-                            <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 font-sans">
-                              <div className="flex gap-3">
-                                <div className="w-24 h-24 shrink-0 rounded-lg overflow-hidden border border-gray-200 bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 8 8%22><rect width=%224%22 height=%224%22 fill=%22%23eee%22/><rect x=%224%22 y=%224%22 width=%224%22 height=%224%22 fill=%22%23eee%22/><rect x=%224%22 width=%224%22 height=%224%22 fill=%22%23fff%22/><rect y=%224%22 width=%224%22 height=%224%22 fill=%22%23fff%22/></svg>')] bg-[size:10px_10px] flex items-center justify-center relative shadow-inner">
-                                  <img src={livePreviewUrl} alt="Live preview" className="max-w-full max-h-full object-contain" />
+                            <div className="mt-4 p-3 bg-white border border-primary-100 rounded-xl space-y-3 font-sans shadow-sm">
+                              <div className="flex flex-col gap-3">
+                                <div className="w-full aspect-video min-h-[220px] rounded-xl overflow-hidden border border-gray-200 bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 8 8%22><rect width=%224%22 height=%224%22 fill=%22%23eee%22/><rect x=%224%22 y=%224%22 width=%224%22 height=%224%22 fill=%22%23eee%22/><rect x=%224%22 width=%224%22 height=%224%22 fill=%22%23fff%22/><rect y=%224%22 width=%224%22 height=%224%22 fill=%22%23fff%22/></svg>')] bg-[size:12px_12px] flex items-center justify-center relative shadow-inner">
+                                  <img src={livePreviewUrl} alt="透過プレビュー" className="w-full h-full object-contain" />
                                   <span className="absolute bottom-1 right-1 bg-primary-600 text-white text-[8px] font-bold px-1 rounded uppercase">
                                     透過プレビュー
                                   </span>
                                 </div>
-                                <div className="flex-1 text-left flex flex-col justify-between">
+                                <div className="text-left flex flex-col gap-2">
                                   <div>
-                                    <span className="text-xs font-bold text-gray-700 block mb-0.5">リアルタイム透過ライブビュー</span>
+                                    <span className="text-sm font-bold text-gray-800 block mb-0.5">透過プレビュー</span>
                                     <p className="text-[10px] text-gray-400 leading-relaxed font-sans">
                                       動画を一時停止してシークバーを動かすと、その瞬間のコマを自動透過してプレビューします。透過度や許容値をここで調整してください。
                                     </p>
@@ -2734,67 +2760,16 @@ Description: アニメーションLINEスタンプ (APNG)
                       <Wand2 size={20} className={animatedIsProcessing ? 'animate-spin' : ''} />
                       動画を切り出してAPNGスタンプを生成
                     </button>
-                  </div>
 
-                  {/* 出力スタンプリスト（映画プレビュー ＆ 手動自由切り出し） */}
-                  <div className="md:col-span-7 bg-white p-6 rounded-2xl shadow-xl border border-primary-100 min-h-[450px] flex flex-col justify-between">
-                    {!animatedVideoUrl ? (
-                      <div className="flex-grow flex flex-col items-center justify-center text-center text-gray-400 p-8 my-auto">
-                        <div className="bg-primary-50 p-6 rounded-full text-primary-400 animate-pulse mb-4">
-                          <Smartphone size={56} />
-                        </div>
-                        <h4 className="font-bold text-gray-700 text-lg mb-2">動画プレビュー準備中</h4>
-                        <p className="text-sm text-gray-500 max-w-sm leading-relaxed">
-                          左側の「動くスタンプの設定」で動画ファイルをアップロードすると、ここに大きな再生プレビュー画面が表示され、自由な範囲を手動で切り出す（自由カット）ことができます。
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="flex-grow flex flex-col justify-between space-y-6">
-                        <div className="space-y-4">
-                          <div className="pb-3 border-b border-gray-100 text-left">
-                            <h4 className="font-bold text-gray-800 text-lg flex items-center gap-2">
-                              <Smartphone className="text-primary-600" size={22} />
-                              切り出しソースプレビュー
-                            </h4>
-                            <span className="text-xs text-gray-400 mt-1 block leading-relaxed">
-                              アップロードされた動画のオリジナル映像です。この動画からスタンプを切り出します。
-                            </span>
-                          </div>
-
-                          <div className="aspect-video bg-neutral-900 rounded-2xl overflow-hidden border border-gray-200 relative shadow-inner flex items-center justify-center">
-                            <video
-                              src={animatedVideoUrl}
-                              controls
-                              muted
-                              loop
-                              playsInline
-                              className="w-full h-full object-contain"
-                            />
-                          </div>
-
-                          <div className="bg-emerald-50 rounded-xl p-4 text-left border border-emerald-100 flex items-start gap-3">
-                            <span className="text-emerald-600 shrink-0 self-center">
-                              <Info size={18} />
-                            </span>
-                            <p className="text-xs text-emerald-800 font-bold leading-relaxed">
-                              「手動で自由切り出し（自由カット）」を押すと、動画内の好きなキャラクターやお好みの位置をドラッグで囲んで、動くスタンプを自由自在に切り取ることができます！
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* 手動切り出しのアクション */}
-                        <div className="space-y-3 pt-4 border-t border-gray-100">
-                          <button
-                            type="button"
-                            onClick={() => openManualCrop(undefined, 'animated-video')}
-                            className="w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 flex items-center justify-center gap-3 text-base cursor-pointer"
-                          >
-                            <Crop size={22} />
-                            手動で自由切り出し（自由カット）を開始
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      disabled={!animatedVideoUrl}
+                      onClick={() => openManualCrop(undefined, 'animated-video')}
+                      className="w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 flex items-center justify-center gap-3 text-base cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Crop size={22} />
+                      手動で自由切り出し（自由カット）を開始
+                    </button>
                   </div>
                 </div>
               </div>

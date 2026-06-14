@@ -212,8 +212,8 @@ export function renderAllLayers(
 
   const sortedLayers = getSortedLayers(textObjects, imageLayers, drawingStrokes, mainImageOrder);
 
-  const drawnW = img.width * config.scale;
-  const drawnH = img.height * config.scale;
+  const drawnW = (config.sourceWidth ?? img.width) * config.scale;
+  const drawnH = (config.sourceHeight ?? img.height) * config.scale;
   const centerX = targetW / 2;
   const centerY = targetH / 2;
 
