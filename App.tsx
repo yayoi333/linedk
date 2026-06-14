@@ -16,6 +16,11 @@ import JSZip from 'jszip';
 import { hexToRgb, removeBackgroundForAnimFrame, assembleAPNG, AnimatedStampResult } from './lib/animatedStampService';
 
 const MAX_APNG_BYTES = 1024 * 1024;
+const LINE_APNG_WIDTH = 320;
+const LINE_APNG_HEIGHT = 270;
+const LINE_APNG_SCALE = Math.min(LINE_APNG_WIDTH / TARGET_WIDTH, LINE_APNG_HEIGHT / TARGET_HEIGHT);
+const LINE_APNG_OFFSET_X = (LINE_APNG_WIDTH - TARGET_WIDTH * LINE_APNG_SCALE) / 2;
+const LINE_APNG_OFFSET_Y = (LINE_APNG_HEIGHT - TARGET_HEIGHT * LINE_APNG_SCALE) / 2;
 const LINE_ANIMATION_DURATIONS = [1, 2, 3, 4] as const;
 
 const isIOSDevice = () => {
@@ -144,6 +149,28 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
     />
   );
 });
+
+const reduceCanvasColors = (canvas: HTMLCanvasElement, bitsPerChannel: number) => {
+  if (bitsPerChannel >= 8) return;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return;
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  const levels = Math.max(2, 2 ** bitsPerChannel);
+  const step = 255 / (levels - 1);
+
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = Math.round(data[i] / step) * step;
+    data[i + 1] = Math.round(data[i + 1] / step) * step;
+    data[i + 2] = Math.round(data[i + 2] / step) * step;
+    if (data[i + 3] > 0 && data[i + 3] < 255) {
+      data[i + 3] = Math.round(data[i + 3] / step) * step;
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+};
 
 async function sha256(message: string) {
   const encoder = new TextEncoder();
@@ -558,10 +585,8 @@ const compileAnimatedStamp = async (
     );
   }
 
-  const buildBlob = async (sizeLimitRatio: number, frameStep: number) => {
+  const buildBlob = async (colorBits: number, frameStep: number) => {
     const frameBufs: ArrayBuffer[] = [];
-    const currentWidth = Math.round(TARGET_WIDTH * sizeLimitRatio);
-    const currentHeight = Math.round(TARGET_HEIGHT * sizeLimitRatio);
 
     for (let f = 0; f < numFrames; f += frameStep) {
       const rawFrameImg = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -572,17 +597,15 @@ const compileAnimatedStamp = async (
       });
 
       const canvas = document.createElement('canvas');
-      canvas.width = currentWidth;
-      canvas.height = currentHeight;
+      canvas.width = LINE_APNG_WIDTH;
+      canvas.height = LINE_APNG_HEIGHT;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Could not get context');
 
-      ctx.clearRect(0, 0, currentWidth, currentHeight);
-
-      // Downscale translation matrix if using size optimization
-      if (sizeLimitRatio !== 1.0) {
-        ctx.scale(sizeLimitRatio, sizeLimitRatio);
-      }
+      ctx.clearRect(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
+      ctx.save();
+      ctx.translate(LINE_APNG_OFFSET_X, LINE_APNG_OFFSET_Y);
+      ctx.scale(LINE_APNG_SCALE, LINE_APNG_SCALE);
 
       const frameTextObjects = (config.textObjectsFrames && config.textObjectsFrames[f]) !== undefined
         ? config.textObjectsFrames[f]
@@ -642,6 +665,8 @@ const compileAnimatedStamp = async (
         TARGET_HEIGHT,
         layerImages
       );
+      ctx.restore();
+      reduceCanvasColors(canvas, colorBits);
 
       const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
       if (!blob) throw new Error('Failed to generate frame blob');
@@ -654,26 +679,37 @@ const compileAnimatedStamp = async (
   };
 
   let bestBlob: Blob | null = null;
+  const colorBitsCandidates = [8, 7, 6, 5, 4];
   const frameSteps = [1, 2, 3, 4, 5, 6, 8];
-  const scaleRatios = [1, 0.95, 0.9, 0.85, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5, 0.44, 0.38, 0.32, 0.26, 0.2, 0.16];
 
-  for (const frameStep of frameSteps) {
-    for (const sizeLimitRatio of scaleRatios) {
-      const blob = await buildBlob(sizeLimitRatio, frameStep);
+  for (const colorBits of colorBitsCandidates) {
+    const blob = await buildBlob(colorBits, 1);
+    if (!bestBlob || blob.size < bestBlob.size) {
+      bestBlob = blob;
+    }
+    if (blob.size <= MAX_APNG_BYTES) {
+      if (colorBits !== 8) {
+        console.log(`Optimized APNG to ${blob.size} bytes (color bits ${colorBits})`);
+      }
+      return blob;
+    }
+  }
+
+  for (const frameStep of frameSteps.slice(1)) {
+    for (const colorBits of colorBitsCandidates) {
+      const blob = await buildBlob(colorBits, frameStep);
       if (!bestBlob || blob.size < bestBlob.size) {
         bestBlob = blob;
       }
       if (blob.size <= MAX_APNG_BYTES) {
-        if (sizeLimitRatio !== 1 || frameStep !== 1) {
-          console.log(`Optimized APNG to ${blob.size} bytes (scale ${sizeLimitRatio}, frame step ${frameStep})`);
-        }
+        console.log(`Optimized APNG to ${blob.size} bytes (frame step ${frameStep}, color bits ${colorBits})`);
         return blob;
       }
     }
   }
 
-  console.warn(`APNG remains above 1MB after optimization (${bestBlob?.size || 0} bytes). Using smallest generated version.`);
-  return bestBlob || assembleAPNG([], config.fps, config.playbackDuration);
+  console.warn(`APNG remains above 1MB after optimization (${bestBlob?.size || 0} bytes).`);
+  throw new Error('1MB以内にできません。コマ数を減らすか、画像の内容をシンプルにしてください。');
 };
 
   const buildOptimizedAnimatedCutout = async (
@@ -684,7 +720,7 @@ const compileAnimatedStamp = async (
     tolerance: number,
     algorithm: 'chromakey' | 'floodfill'
   ): Promise<{ blob: Blob; frameBuffers: ArrayBuffer[]; dataUrls: string[]; fps: number }> => {
-    const build = async (sizeLimitRatio: number, frameStep: number) => {
+    const build = async (colorBits: number, frameStep: number) => {
       const frameBuffers: ArrayBuffer[] = [];
       const dataUrls: string[] = [];
 
@@ -696,16 +732,20 @@ const compileAnimatedStamp = async (
           i.src = originalFrames[f];
         });
 
-        const optW = Math.max(1, Math.round(img.width * sizeLimitRatio));
-        const optH = Math.max(1, Math.round(img.height * sizeLimitRatio));
         const canvas = document.createElement('canvas');
-        canvas.width = optW;
-        canvas.height = optH;
+        canvas.width = LINE_APNG_WIDTH;
+        canvas.height = LINE_APNG_HEIGHT;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) continue;
 
-        ctx.drawImage(img, 0, 0, optW, optH);
-        const imageData = ctx.getImageData(0, 0, optW, optH);
+        ctx.clearRect(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
+        const fitScale = Math.min(LINE_APNG_WIDTH / img.width, LINE_APNG_HEIGHT / img.height);
+        const drawW = Math.max(1, Math.round(img.width * fitScale));
+        const drawH = Math.max(1, Math.round(img.height * fitScale));
+        const drawX = Math.round((LINE_APNG_WIDTH - drawW) / 2);
+        const drawY = Math.round((LINE_APNG_HEIGHT - drawH) / 2);
+        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+        const imageData = ctx.getImageData(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
         const processedImgData = removeBackgroundForAnimFrame(
           imageData,
           bgColor,
@@ -713,6 +753,7 @@ const compileAnimatedStamp = async (
           algorithm
         );
         ctx.putImageData(processedImgData, 0, 0);
+        reduceCanvasColors(canvas, colorBits);
 
         const pngBlob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
         if (!pngBlob) continue;
@@ -730,19 +771,30 @@ const compileAnimatedStamp = async (
     };
 
     let best: { blob: Blob; frameBuffers: ArrayBuffer[]; dataUrls: string[]; fps: number } | null = null;
+    const colorBitsCandidates = [8, 7, 6, 5, 4];
     const frameSteps = [1, 2, 3, 4, 5, 6, 8];
-    const scaleRatios = [1, 0.95, 0.9, 0.85, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5, 0.44, 0.38, 0.32, 0.26, 0.2, 0.16];
 
-    for (const frameStep of frameSteps) {
-      for (const sizeLimitRatio of scaleRatios) {
-        const result = await build(sizeLimitRatio, frameStep);
+    for (const colorBits of colorBitsCandidates) {
+      const result = await build(colorBits, 1);
+      if (!best || result.blob.size < best.blob.size) {
+        best = result;
+      }
+      if (result.blob.size <= MAX_APNG_BYTES) {
+        if (colorBits !== 8) {
+          console.log(`Optimized cutout APNG to ${result.blob.size} bytes (color bits ${colorBits})`);
+        }
+        return result;
+      }
+    }
+
+    for (const frameStep of frameSteps.slice(1)) {
+      for (const colorBits of colorBitsCandidates) {
+        const result = await build(colorBits, frameStep);
         if (!best || result.blob.size < best.blob.size) {
           best = result;
         }
         if (result.blob.size <= MAX_APNG_BYTES) {
-          if (sizeLimitRatio !== 1 || frameStep !== 1) {
-            console.log(`Optimized cutout APNG to ${result.blob.size} bytes (scale ${sizeLimitRatio}, frame step ${frameStep})`);
-          }
+          console.log(`Optimized cutout APNG to ${result.blob.size} bytes (frame step ${frameStep}, color bits ${colorBits})`);
           return result;
         }
       }
@@ -751,8 +803,8 @@ const compileAnimatedStamp = async (
     if (!best) {
       throw new Error('APNGの生成に失敗しました');
     }
-    console.warn(`Cutout APNG remains above 1MB after optimization (${best.blob.size} bytes). Using smallest generated version.`);
-    return best;
+    console.warn(`Cutout APNG remains above 1MB after optimization (${best.blob.size} bytes).`);
+    throw new Error('1MB以内にできません。コマ数を減らすか、画像の内容をシンプルにしてください。');
   };
 
   const recompileAnimatedStamp = async (stamp: Stamp): Promise<Stamp> => {
@@ -2996,7 +3048,7 @@ Description: アニメーションLINEスタンプ (APNG)
       </main>
       
       {editingStamp && (
-        <StampEditorModal stamp={editingStamp} isOpen={!!editingStamp} onClose={() => { setEditingStamp(null); setEditingSpecialType(null); }} onSave={async (updated) => { setEditingStamp(null); let finalStamp = updated; if (updated.isAnimated) { setIsProcessing(true); try { finalStamp = await recompileAnimatedStamp(updated); } catch (e) { console.error(e); } finally { setIsProcessing(false); } } if (editingSpecialType) { updateSpecialConfig(finalStamp); } else { updateStamp(finalStamp); } }} onReCrop={() => handleReCropFromEditor(editingStamp)} initialPreviewBg={previewBg} targetWidth={editingSpecialType === 'main' ? MAIN_WIDTH : (editingSpecialType === 'tab' ? TAB_WIDTH : TARGET_WIDTH)} targetHeight={editingSpecialType === 'main' ? MAIN_HEIGHT : (editingSpecialType === 'tab' ? TAB_HEIGHT : TARGET_HEIGHT)} initialScale={editingSpecialType === 'main' ? mainConfig?.scale : editingSpecialType === 'tab' ? tabConfig?.scale : undefined} initialRotation={editingSpecialType === 'main' ? mainConfig?.rotation : editingSpecialType === 'tab' ? tabConfig?.rotation : undefined} initialOffset={editingSpecialType === 'main' ? {x: mainConfig?.offsetX || 0, y: mainConfig?.offsetY || 0} : editingSpecialType === 'tab' ? {x: tabConfig?.offsetX || 0, y: tabConfig?.offsetY || 0} : undefined} initialTextObjects={editingSpecialType === 'main' ? mainConfig?.textObjects : editingSpecialType === 'tab' ? tabConfig?.textObjects : undefined} initialImageLayers={editingSpecialType === 'main' ? mainConfig?.imageLayers : editingSpecialType === 'tab' ? tabConfig?.imageLayers : undefined} initialDrawingStrokes={editingSpecialType === 'main' ? mainConfig?.drawingStrokes : editingSpecialType === 'tab' ? tabConfig?.drawingStrokes : undefined} />
+        <StampEditorModal stamp={editingStamp} isOpen={!!editingStamp} onClose={() => { setEditingStamp(null); setEditingSpecialType(null); }} onSave={async (updated) => { setEditingStamp(null); let finalStamp = updated; if (updated.isAnimated) { setIsProcessing(true); try { finalStamp = await recompileAnimatedStamp(updated); } catch (e: any) { console.error(e); alert(e?.message || '1MB以内にできません。'); setIsProcessing(false); return; } finally { setIsProcessing(false); } } if (editingSpecialType) { updateSpecialConfig(finalStamp); } else { updateStamp(finalStamp); } }} onReCrop={() => handleReCropFromEditor(editingStamp)} initialPreviewBg={previewBg} targetWidth={editingSpecialType === 'main' ? MAIN_WIDTH : (editingSpecialType === 'tab' ? TAB_WIDTH : TARGET_WIDTH)} targetHeight={editingSpecialType === 'main' ? MAIN_HEIGHT : (editingSpecialType === 'tab' ? TAB_HEIGHT : TARGET_HEIGHT)} initialScale={editingSpecialType === 'main' ? mainConfig?.scale : editingSpecialType === 'tab' ? tabConfig?.scale : undefined} initialRotation={editingSpecialType === 'main' ? mainConfig?.rotation : editingSpecialType === 'tab' ? tabConfig?.rotation : undefined} initialOffset={editingSpecialType === 'main' ? {x: mainConfig?.offsetX || 0, y: mainConfig?.offsetY || 0} : editingSpecialType === 'tab' ? {x: tabConfig?.offsetX || 0, y: tabConfig?.offsetY || 0} : undefined} initialTextObjects={editingSpecialType === 'main' ? mainConfig?.textObjects : editingSpecialType === 'tab' ? tabConfig?.textObjects : undefined} initialImageLayers={editingSpecialType === 'main' ? mainConfig?.imageLayers : editingSpecialType === 'tab' ? tabConfig?.imageLayers : undefined} initialDrawingStrokes={editingSpecialType === 'main' ? mainConfig?.drawingStrokes : editingSpecialType === 'tab' ? tabConfig?.drawingStrokes : undefined} />
       )}
 
       {showSourceSelectModal && (

@@ -305,7 +305,7 @@ export function assembleAPNG(frames: ArrayBuffer[], fps: number, durationSeconds
     fcTlView.setUint32(12, 0, false); // X coordinate offset
     fcTlView.setUint16(20, frameDelay.numerator, false); // Numerator of delay
     fcTlView.setUint16(22, frameDelay.denominator, false); // Denominator of delay
-    fcTlView.setUint8(24, 1); // dispose_op: 1 (APNG_DISPOSE_OP_BACKGROUND) to clear canvas area before next render
+    fcTlView.setUint8(24, 0); // dispose_op: 0 (APNG_DISPOSE_OP_NONE) for full-canvas frames
     fcTlView.setUint8(25, 0); // blend_op: 0 (APNG_BLEND_OP_SOURCE) to fully overwrite source RGBA values
 
     writeChunk('fcTL', fcTlPayload);
