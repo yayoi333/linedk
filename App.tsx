@@ -15,6 +15,8 @@ import { removeGridLines, detectGridLines } from './lib/gridRemoval';
 import JSZip from 'jszip';
 import { hexToRgb, removeBackgroundForAnimFrame, assembleAPNG, AnimatedStampResult } from './lib/animatedStampService';
 
+const MAX_APNG_BYTES = 1024 * 1024;
+
 const isIOSDevice = () => {
   if (typeof window === 'undefined') return false;
 
@@ -27,7 +29,6 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    if (stamp.isAnimated) return;
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -36,25 +37,54 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
     // Reset canvas only at the start of new render
     ctx.clearRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
 
+    const frameIndex = 0;
     const img = new Image();
     img.onload = () => {
+      const frameScale = stamp.isAnimated
+        ? (stamp.scalesFrames?.[frameIndex] ?? stamp.scale)
+        : stamp.scale;
+      const frameRotation = stamp.isAnimated
+        ? (stamp.rotationsFrames?.[frameIndex] ?? stamp.rotation ?? 0)
+        : (stamp.rotation ?? 0);
+      const frameOffsetX = stamp.isAnimated
+        ? (stamp.offsetsXFrames?.[frameIndex] ?? stamp.offsetX)
+        : stamp.offsetX;
+      const frameOffsetY = stamp.isAnimated
+        ? (stamp.offsetsYFrames?.[frameIndex] ?? stamp.offsetY)
+        : stamp.offsetY;
+      const frameFlipH = stamp.isAnimated
+        ? (stamp.flipsHFrames?.[frameIndex] ?? stamp.flipH)
+        : stamp.flipH;
+      const frameFlipV = stamp.isAnimated
+        ? (stamp.flipsVFrames?.[frameIndex] ?? stamp.flipV)
+        : stamp.flipV;
+      const frameTextObjects = stamp.isAnimated && stamp.textObjectsFrames?.[frameIndex] !== undefined
+        ? stamp.textObjectsFrames[frameIndex]
+        : stamp.textObjects;
+      const frameImageLayers = stamp.isAnimated && stamp.imageLayersFrames?.[frameIndex] !== undefined
+        ? stamp.imageLayersFrames[frameIndex]
+        : stamp.imageLayers;
+      const frameDrawingStrokes = stamp.isAnimated && stamp.drawingStrokesFrames?.[frameIndex] !== undefined
+        ? stamp.drawingStrokesFrames[frameIndex]
+        : stamp.drawingStrokes;
+
       const config: ExportConfig = {
         id: stamp.id,
-        scale: stamp.scale,
-        rotation: stamp.rotation,
-        offsetX: stamp.offsetX,
-        offsetY: stamp.offsetY,
-        textObjects: stamp.textObjects,
-        imageLayers: stamp.imageLayers,
-        drawingStrokes: stamp.drawingStrokes,
+        scale: frameScale,
+        rotation: frameRotation,
+        offsetX: frameOffsetX,
+        offsetY: frameOffsetY,
+        textObjects: frameTextObjects,
+        imageLayers: frameImageLayers,
+        drawingStrokes: frameDrawingStrokes,
         mainImageLayerOrder: stamp.mainImageLayerOrder ?? 100,
-        flipH: stamp.flipH,
-        flipV: stamp.flipV,
+        flipH: frameFlipH,
+        flipV: frameFlipV,
       };
 
       // 画像レイヤー用の画像をロード
       const layerImages = new Map<string, HTMLImageElement>();
-      const layerPromises = (stamp.imageLayers ?? []).map(layer => {
+      const layerPromises = (frameImageLayers ?? []).map(layer => {
         return new Promise<void>((resolve) => {
           const lImg = new Image();
           lImg.onload = () => { layerImages.set(layer.id, lImg); resolve(); };
@@ -81,54 +111,8 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
         renderAllLayers(ctx, img, config, TARGET_WIDTH, TARGET_HEIGHT, layerImages);
       });
     };
-    img.src = stamp.dataUrl;
+    img.src = stamp.isAnimated ? (stamp.rawFrames?.[frameIndex] || stamp.dataUrl) : stamp.dataUrl;
   }, [stamp, previewBg]);
-
-  if (stamp.isAnimated) {
-    const scale = stamp.scale || 1.0;
-    const width = stamp.width * scale;
-    const height = stamp.height * scale;
-    const rotation = stamp.rotation ?? 0;
-    const offsetX = stamp.offsetX ?? 0;
-    const offsetY = stamp.offsetY ?? 0;
-    const flipH = stamp.flipH ?? false;
-    const flipV = stamp.flipV ?? false;
-
-    // Translate to percentages relative to standard target canvas size (370x320)
-    // so it perfectly matches the editor's scaling constraints on container resizing.
-    const wPercent = (width / TARGET_WIDTH) * 100;
-    const hPercent = (height / TARGET_HEIGHT) * 100;
-    const xPercent = (offsetX / TARGET_WIDTH) * 100;
-    const yPercent = (offsetY / TARGET_HEIGHT) * 100;
-
-    return (
-      <div className="w-full h-full relative overflow-hidden" style={{ minHeight: '120px' }}>
-        {previewBg === 'checker' ? (
-          <div className="absolute inset-0 bg-[linear-gradient(45deg,#f3f4f6_25%,transparent_25%),linear-gradient(-45deg,#f3f4f6_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f3f4f6_75%),linear-gradient(-45deg,transparent_75%,#f3f4f6_75%)] bg-[size:10px_10px] bg-[position:0_0,0_5px,5px_-5px,-5px_0] bg-gray-50" />
-        ) : (
-          <div className="absolute inset-0" style={{ backgroundColor: previewBg }} />
-        )}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <img
-            src={stamp.dataUrl}
-            alt="animated stamp preview"
-            referrerPolicy="no-referrer"
-            style={{
-              position: 'absolute',
-              left: '50%',
-              top: '50%',
-              width: `${wPercent}%`,
-              height: `${hPercent}%`,
-              transform: `translate(calc(-50% + ${xPercent}%), calc(-50% + ${yPercent}%)) rotate(${rotation}deg) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1})`,
-              transformOrigin: 'center',
-            }}
-            className="max-w-none max-h-none object-contain drop-shadow-sm select-none pointer-events-none"
-            key={stamp.dataUrl}
-          />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <canvas
@@ -528,16 +512,12 @@ const compileAnimatedStamp = async (
     );
   }
 
-  let finalBlob: Blob | null = null;
-  let sizeLimitRatio = 1.0;
-  const maxAttempts = 5;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  const buildBlob = async (sizeLimitRatio: number, frameStep: number) => {
     const frameBufs: ArrayBuffer[] = [];
     const currentWidth = Math.round(TARGET_WIDTH * sizeLimitRatio);
     const currentHeight = Math.round(TARGET_HEIGHT * sizeLimitRatio);
 
-    for (let f = 0; f < numFrames; f++) {
+    for (let f = 0; f < numFrames; f += frameStep) {
       const rawFrameImg = await new Promise<HTMLImageElement>((resolve, reject) => {
         const img = new Image();
         img.onload = () => resolve(img);
@@ -621,21 +601,110 @@ const compileAnimatedStamp = async (
       frameBufs.push(buffer);
     }
 
-    finalBlob = assembleAPNG(frameBufs, config.fps);
+    const adjustedFps = Math.max(1, Math.round(config.fps / frameStep));
+    return assembleAPNG(frameBufs, adjustedFps);
+  };
 
-    if (finalBlob.size <= 1048576 || attempt === maxAttempts - 1) {
-      if (sizeLimitRatio !== 1.0) {
-        console.log(`Optimized APNG successfully downscaled to ${finalBlob.size} bytes (ratio ${sizeLimitRatio})`);
+  let bestBlob: Blob | null = null;
+  const frameSteps = [1, 2, 3, 4, 5, 6, 8];
+  const scaleRatios = [1, 0.95, 0.9, 0.85, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5, 0.44, 0.38, 0.32, 0.26, 0.2, 0.16];
+
+  for (const frameStep of frameSteps) {
+    for (const sizeLimitRatio of scaleRatios) {
+      const blob = await buildBlob(sizeLimitRatio, frameStep);
+      if (!bestBlob || blob.size < bestBlob.size) {
+        bestBlob = blob;
       }
-      break;
-    } else {
-      console.warn(`APNG exceeds 1MB limit (${finalBlob.size} B). Attempting downscale ratio: ${sizeLimitRatio - 0.15}`);
-      sizeLimitRatio -= 0.15;
+      if (blob.size <= MAX_APNG_BYTES) {
+        if (sizeLimitRatio !== 1 || frameStep !== 1) {
+          console.log(`Optimized APNG to ${blob.size} bytes (scale ${sizeLimitRatio}, frame step ${frameStep})`);
+        }
+        return blob;
+      }
     }
   }
 
-  return finalBlob || assembleAPNG([], config.fps);
+  console.warn(`APNG remains above 1MB after optimization (${bestBlob?.size || 0} bytes). Using smallest generated version.`);
+  return bestBlob || assembleAPNG([], config.fps);
 };
+
+  const buildOptimizedAnimatedCutout = async (
+    originalFrames: string[],
+    fps: number,
+    bgColor: string,
+    tolerance: number,
+    algorithm: 'chromakey' | 'floodfill'
+  ): Promise<{ blob: Blob; frameBuffers: ArrayBuffer[]; dataUrls: string[]; fps: number }> => {
+    const build = async (sizeLimitRatio: number, frameStep: number) => {
+      const frameBuffers: ArrayBuffer[] = [];
+      const dataUrls: string[] = [];
+
+      for (let f = 0; f < originalFrames.length; f += frameStep) {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const i = new Image();
+          i.onload = () => resolve(i);
+          i.onerror = reject;
+          i.src = originalFrames[f];
+        });
+
+        const optW = Math.max(1, Math.round(img.width * sizeLimitRatio));
+        const optH = Math.max(1, Math.round(img.height * sizeLimitRatio));
+        const canvas = document.createElement('canvas');
+        canvas.width = optW;
+        canvas.height = optH;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) continue;
+
+        ctx.drawImage(img, 0, 0, optW, optH);
+        const imageData = ctx.getImageData(0, 0, optW, optH);
+        const processedImgData = removeBackgroundForAnimFrame(
+          imageData,
+          bgColor,
+          tolerance,
+          algorithm
+        );
+        ctx.putImageData(processedImgData, 0, 0);
+
+        const pngBlob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
+        if (!pngBlob) continue;
+        frameBuffers.push(await pngBlob.arrayBuffer());
+        dataUrls.push(canvas.toDataURL('image/png'));
+      }
+
+      const adjustedFps = Math.max(1, Math.round(fps / frameStep));
+      return {
+        blob: assembleAPNG(frameBuffers, adjustedFps),
+        frameBuffers,
+        dataUrls,
+        fps: adjustedFps
+      };
+    };
+
+    let best: { blob: Blob; frameBuffers: ArrayBuffer[]; dataUrls: string[]; fps: number } | null = null;
+    const frameSteps = [1, 2, 3, 4, 5, 6, 8];
+    const scaleRatios = [1, 0.95, 0.9, 0.85, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5, 0.44, 0.38, 0.32, 0.26, 0.2, 0.16];
+
+    for (const frameStep of frameSteps) {
+      for (const sizeLimitRatio of scaleRatios) {
+        const result = await build(sizeLimitRatio, frameStep);
+        if (!best || result.blob.size < best.blob.size) {
+          best = result;
+        }
+        if (result.blob.size <= MAX_APNG_BYTES) {
+          if (sizeLimitRatio !== 1 || frameStep !== 1) {
+            console.log(`Optimized cutout APNG to ${result.blob.size} bytes (scale ${sizeLimitRatio}, frame step ${frameStep})`);
+          }
+          return result;
+        }
+      }
+    }
+
+    if (!best) {
+      throw new Error('APNGの生成に失敗しました');
+    }
+    console.warn(`Cutout APNG remains above 1MB after optimization (${best.blob.size} bytes). Using smallest generated version.`);
+    return best;
+  };
 
   const recompileAnimatedStamp = async (stamp: Stamp): Promise<Stamp> => {
     if (!stamp.isAnimated || !stamp.rawFrames || stamp.rawFrames.length === 0) {
@@ -761,7 +830,6 @@ const compileAnimatedStamp = async (
       const D = Math.min(animDuration, video.duration);
 
       const stampFramesBuffers: ArrayBuffer[][] = Array.from({ length: totalStamps }, () => []);
-      const stampFramesDataUrls: string[][] = Array.from({ length: totalStamps }, () => []);
       const stampRawOriginalFrames: string[][] = Array.from({ length: totalStamps }, () => []);
 
       for (let f = 0; f < N; f++) {
@@ -825,8 +893,6 @@ const compileAnimatedStamp = async (
             const buffer = await pngBlob.arrayBuffer();
             stampFramesBuffers[bIdx].push(buffer);
             
-            const dataUrl = cellCanvas.toDataURL('image/png');
-            stampFramesDataUrls[bIdx].push(dataUrl);
           }
         }
       }
@@ -836,70 +902,18 @@ const compileAnimatedStamp = async (
       const results: Stamp[] = [];
 
       for (let bIdx = 0; bIdx < totalStamps; bIdx++) {
-        let frameBufs = stampFramesBuffers[bIdx];
-        if (frameBufs.length === 0) continue;
+        if (stampFramesBuffers[bIdx].length === 0) continue;
 
-        let apngBlob = assembleAPNG(frameBufs, animFps);
-        let finalFramesDataUrls = stampFramesDataUrls[bIdx];
-
-        // Ensure file size is kept under 1MB limit for LINE store Compatibility
-        if (apngBlob.size > 1048576) {
-          console.warn(`APNG too large (${apngBlob.size} bytes). Downscaling to fit 1MB limit...`);
-          let sizeLimitRatio = 0.85;
-          const maxAttempts = 5;
-
-          for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const nextFrameBufs: ArrayBuffer[] = [];
-            const nextFramesDataUrls: string[] = [];
-
-            for (let f = 0; f < N; f++) {
-              const origUrl = stampRawOriginalFrames[bIdx][f];
-              const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-                const i = new Image();
-                i.onload = () => resolve(i);
-                i.onerror = reject;
-                i.src = origUrl;
-              });
-
-              const optW = Math.round(img.width * sizeLimitRatio);
-              const optH = Math.round(img.height * sizeLimitRatio);
-
-              const optCanvas = document.createElement('canvas');
-              optCanvas.width = optW;
-              optCanvas.height = optH;
-              const optCtx = optCanvas.getContext('2d', { willReadFrequently: true });
-              if (!optCtx) continue;
-
-              optCtx.drawImage(img, 0, 0, optW, optH);
-
-              const cellImgData = optCtx.getImageData(0, 0, optW, optH);
-              const processedImgData = removeBackgroundForAnimFrame(
-                cellImgData,
-                animBgColor,
-                animTolerance,
-                animRemovalAlg
-              );
-              optCtx.putImageData(processedImgData, 0, 0);
-
-              const pngBlob = await new Promise<Blob | null>((res) => optCanvas.toBlob(res, 'image/png'));
-              if (pngBlob) {
-                const buffer = await pngBlob.arrayBuffer();
-                nextFrameBufs.push(buffer);
-                nextFramesDataUrls.push(optCanvas.toDataURL('image/png'));
-              }
-            }
-
-            const nextApngBlob = assembleAPNG(nextFrameBufs, animFps);
-            if (nextApngBlob.size <= 1048576 || attempt === maxAttempts - 1) {
-              apngBlob = nextApngBlob;
-              frameBufs = nextFrameBufs;
-              finalFramesDataUrls = nextFramesDataUrls;
-              console.log(`Successfully compressed APNG to ${apngBlob.size} bytes (ratio ${sizeLimitRatio})`);
-              break;
-            }
-            sizeLimitRatio -= 0.15;
-          }
-        }
+        const optimized = await buildOptimizedAnimatedCutout(
+          stampRawOriginalFrames[bIdx],
+          animFps,
+          animBgColor,
+          animTolerance,
+          animRemovalAlg
+        );
+        const apngBlob = optimized.blob;
+        const finalFramesDataUrls = optimized.dataUrls;
+        const finalFps = optimized.fps;
 
         const reader = new FileReader();
         const apngUrl = await new Promise<string>((resolve) => {
@@ -927,7 +941,7 @@ const compileAnimatedStamp = async (
           isAnimated: true,
           rawFrames: finalFramesDataUrls,
           rawOriginalFrames: stampRawOriginalFrames[bIdx],
-          fps: animFps
+          fps: finalFps
         });
       }
 
@@ -1783,6 +1797,10 @@ Description: アニメーションLINEスタンプ (APNG)
   };
 
   const openManualCrop = (replaceId?: string, defaultSourceId?: string) => {
+    if (defaultSourceId === 'animated-video' && !animatedVideoUrl) {
+      alert('元の動画がこのブラウザセッションに残っていません。動画ファイルをもう一度選択してから、再切り出ししてください。');
+      return;
+    }
     if (sourceImages.length === 0 && !animatedVideoUrl) return;
     setTargetReplaceId(replaceId || null);
     setManualCropInitialSourceId(defaultSourceId || (animatedVideoUrl ? 'animated-video' : undefined));
@@ -1821,7 +1839,6 @@ Description: アニメーションLINEスタンプ (APNG)
       const D = Math.min(animDuration, video.duration);
 
       const stampFramesBuffers: ArrayBuffer[] = [];
-      const stampFramesDataUrls: string[] = [];
       const stampRawOriginalFrames: string[] = [];
 
       const box = {
@@ -1887,73 +1904,20 @@ Description: アニメーションLINEスタンプ (APNG)
           const buffer = await pngBlob.arrayBuffer();
           stampFramesBuffers.push(buffer);
           
-          const dataUrl = cellCanvas.toDataURL('image/png');
-          stampFramesDataUrls.push(dataUrl);
         }
       }
 
       if (stampFramesBuffers.length > 0) {
-        let finalFrameBufs = stampFramesBuffers;
-        let finalFramesDataUrls = stampFramesDataUrls;
-        let apngBlob = assembleAPNG(finalFrameBufs, animFps);
-
-        if (apngBlob.size > 1048576) {
-          console.warn(`Manual crop APNG exceeds 1MB limit. Compressing...`);
-          let sizeLimitRatio = 0.85;
-          const maxAttempts = 5;
-
-          for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const nextFrameBufs: ArrayBuffer[] = [];
-            const nextFramesDataUrls: string[] = [];
-
-            for (let f = 0; f < N; f++) {
-              const origUrl = stampRawOriginalFrames[f];
-              const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-                const i = new Image();
-                i.onload = () => resolve(i);
-                i.onerror = reject;
-                i.src = origUrl;
-              });
-
-              const optW = Math.round(img.width * sizeLimitRatio);
-              const optH = Math.round(img.height * sizeLimitRatio);
-
-              const optCanvas = document.createElement('canvas');
-              optCanvas.width = optW;
-              optCanvas.height = optH;
-              const optCtx = optCanvas.getContext('2d', { willReadFrequently: true });
-              if (!optCtx) continue;
-
-              optCtx.drawImage(img, 0, 0, optW, optH);
-
-              const cellImgData = optCtx.getImageData(0, 0, optW, optH);
-              const processedImgData = removeBackgroundForAnimFrame(
-                cellImgData,
-                animBgColor,
-                animTolerance,
-                animRemovalAlg
-              );
-              optCtx.putImageData(processedImgData, 0, 0);
-
-              const pngBlob = await new Promise<Blob | null>((res) => optCanvas.toBlob(res, 'image/png'));
-              if (pngBlob) {
-                const buffer = await pngBlob.arrayBuffer();
-                nextFrameBufs.push(buffer);
-                nextFramesDataUrls.push(optCanvas.toDataURL('image/png'));
-              }
-            }
-
-            const nextApngBlob = assembleAPNG(nextFrameBufs, animFps);
-            if (nextApngBlob.size <= 1048576 || attempt === maxAttempts - 1) {
-              apngBlob = nextApngBlob;
-              finalFrameBufs = nextFrameBufs;
-              finalFramesDataUrls = nextFramesDataUrls;
-              console.log(`Successfully compressed manual sliced APNG to ${apngBlob.size} bytes`);
-              break;
-            }
-            sizeLimitRatio -= 0.15;
-          }
-        }
+        const optimized = await buildOptimizedAnimatedCutout(
+          stampRawOriginalFrames,
+          animFps,
+          animBgColor,
+          animTolerance,
+          animRemovalAlg
+        );
+        const apngBlob = optimized.blob;
+        const finalFramesDataUrls = optimized.dataUrls;
+        const finalFps = optimized.fps;
 
         const reader = new FileReader();
         const apngUrl = await new Promise<string>((resolve) => {
@@ -1971,7 +1935,7 @@ Description: アニメーションLINEスタンプ (APNG)
           isAnimated: true,
           rawFrames: finalFramesDataUrls,
           rawOriginalFrames: stampRawOriginalFrames,
-          fps: animFps
+          fps: finalFps
         };
 
         if (targetReplaceId) {
@@ -2054,7 +2018,7 @@ Description: アニメーションLINEスタンプ (APNG)
   const handleReCropFromEditor = (stamp: Stamp) => {
       setEditingStamp(null);
       setTimeout(() => {
-          openManualCrop(stamp.id, stamp.sourceImageId);
+          openManualCrop(stamp.id, stamp.isAnimated ? 'animated-video' : stamp.sourceImageId);
       }, 100);
   };
 
@@ -2934,7 +2898,7 @@ Description: アニメーションLINEスタンプ (APNG)
                                     </div>
                                   )}
                                   <button onClick={(e) => { e.stopPropagation(); downloadSingleStamp(stamp); }} className="bg-white text-gray-600 p-1.5 rounded-full shadow hover:bg-gray-100 hover:text-primary-600 cursor-pointer" title="ダウンロード"><Download size={14} /></button>
-                                  <button onClick={(e) => { e.stopPropagation(); openManualCrop(stamp.id, stamp.sourceImageId); }} className="bg-white text-gray-600 p-1.5 rounded-full shadow hover:bg-gray-100 hover:text-primary-600 cursor-pointer" title="再切り出し"><Crop size={14} /></button>
+                                  <button onClick={(e) => { e.stopPropagation(); openManualCrop(stamp.id, stamp.isAnimated ? 'animated-video' : stamp.sourceImageId); }} className="bg-white text-gray-600 p-1.5 rounded-full shadow hover:bg-gray-100 hover:text-primary-600 cursor-pointer" title="再切り出し"><Crop size={14} /></button>
                               </div>
                             )}
                         </div>

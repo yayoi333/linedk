@@ -57,6 +57,7 @@ interface HistoryState {
     mainImageLayerOrder: number;
     currentFrameIndex?: number;
     frames?: string[];
+    originalFrames?: string[];
     framesTextObjects?: TextObject[][];
     framesImageLayers?: ImageLayerObject[][];
     framesDrawingStrokes?: DrawingStroke[][];
@@ -482,6 +483,7 @@ export const StampEditorModal: React.FC<Props> = ({
           mainImageLayerOrder: stamp.mainImageLayerOrder ?? 100,
           currentFrameIndex: 0,
           frames: stamp.isAnimated && stamp.rawFrames ? [...stamp.rawFrames] : [],
+          originalFrames: stamp.isAnimated && stamp.rawFrames ? initOriginalFrames : [],
           framesTextObjects: fTexts,
           framesImageLayers: fImages,
           framesDrawingStrokes: fDrawings,
@@ -582,6 +584,7 @@ export const StampEditorModal: React.FC<Props> = ({
           mainImageLayerOrder,
           currentFrameIndex,
           frames: [...frames],
+          originalFrames: [...originalFrames],
           framesTextObjects: framesTextObjects.map(arr => [...arr]),
           framesImageLayers: framesImageLayers.map(arr => [...arr]),
           framesDrawingStrokes: framesDrawingStrokes.map(arr => [...arr]),
@@ -618,6 +621,7 @@ export const StampEditorModal: React.FC<Props> = ({
               setFramesImageLayers(prevState.framesImageLayers || []);
               setFramesDrawingStrokes(prevState.framesDrawingStrokes || []);
               setFramesState(prevState.frames || []);
+              setOriginalFrames(prevState.originalFrames || []);
               setFramesScales(prevState.framesScales || []);
               setFramesRotations(prevState.framesRotations || []);
               setFramesOffsetsX(prevState.framesOffsetsX || []);
@@ -661,6 +665,7 @@ export const StampEditorModal: React.FC<Props> = ({
               setFramesImageLayers(nextState.framesImageLayers || []);
               setFramesDrawingStrokes(nextState.framesDrawingStrokes || []);
               setFramesState(nextState.frames || []);
+              setOriginalFrames(nextState.originalFrames || []);
               setFramesScales(nextState.framesScales || []);
               setFramesRotations(nextState.framesRotations || []);
               setFramesOffsetsX(nextState.framesOffsetsX || []);
@@ -1420,6 +1425,62 @@ export const StampEditorModal: React.FC<Props> = ({
       showToast("装飾を一括コピーしました！");
   };
 
+  const moveCurrentFrame = (direction: -1 | 1) => {
+      if (!stamp.isAnimated || frames.length <= 1) return;
+      const targetIndex = currentFrameIndex + direction;
+      if (targetIndex < 0 || targetIndex >= frames.length) return;
+
+      function swap<T>(items: T[]): T[] {
+          const copy = [...items];
+          const currentValue = copy[currentFrameIndex];
+          copy[currentFrameIndex] = copy[targetIndex];
+          copy[targetIndex] = currentValue;
+          return copy;
+      }
+
+      const syncedFrames = frames.map((frame, idx) => idx === currentFrameIndex ? workingDataUrl : frame);
+      const nextFrames = swap<string>(syncedFrames);
+      const nextOriginalFrames = swap<string>(originalFrames);
+      const nextTexts = swap<TextObject[]>(framesTextObjects);
+      const nextImages = swap<ImageLayerObject[]>(framesImageLayers);
+      const nextDrawings = swap<DrawingStroke[]>(framesDrawingStrokes);
+      const nextScales = swap<number>(framesScales);
+      const nextRotations = swap<number>(framesRotations);
+      const nextOffsetsX = swap<number>(framesOffsetsX);
+      const nextOffsetsY = swap<number>(framesOffsetsY);
+      const nextFlipsH = swap<boolean>(framesFlipsH);
+      const nextFlipsV = swap<boolean>(framesFlipsV);
+
+      setFramesState(nextFrames);
+      setOriginalFrames(nextOriginalFrames);
+      setFramesTextObjects(nextTexts);
+      setFramesImageLayers(nextImages);
+      setFramesDrawingStrokes(nextDrawings);
+      setFramesScales(nextScales);
+      setFramesRotations(nextRotations);
+      setFramesOffsetsX(nextOffsetsX);
+      setFramesOffsetsY(nextOffsetsY);
+      setFramesFlipsH(nextFlipsH);
+      setFramesFlipsV(nextFlipsV);
+      setCurrentFrameIndex(targetIndex);
+      setIsPlaying(false);
+
+      addToHistory({
+          currentFrameIndex: targetIndex,
+          frames: nextFrames,
+          originalFrames: nextOriginalFrames,
+          framesTextObjects: nextTexts,
+          framesImageLayers: nextImages,
+          framesDrawingStrokes: nextDrawings,
+          framesScales: nextScales,
+          framesRotations: nextRotations,
+          framesOffsetsX: nextOffsetsX,
+          framesOffsetsY: nextOffsetsY,
+          framesFlipsH: nextFlipsH,
+          framesFlipsV: nextFlipsV,
+      });
+  };
+
   const handleSave = () => {
       if (pendingBrushRef.current) {
           cancelAnimationFrame(pendingBrushRef.current);
@@ -1445,6 +1506,7 @@ export const StampEditorModal: React.FC<Props> = ({
           // Sync animated sequences
           ...(stamp.isAnimated ? {
               rawFrames: syncedFrames,
+              rawOriginalFrames: originalFrames,
               textObjectsFrames: framesTextObjects,
               imageLayersFrames: framesImageLayers,
               drawingStrokesFrames: framesDrawingStrokes,
@@ -1767,6 +1829,26 @@ export const StampEditorModal: React.FC<Props> = ({
                             <span className="text-[11px] text-gray-500 font-bold">
                                 編集中: {currentFrameIndex + 1} / {frames.length}
                             </span>
+                            <div className="flex items-center gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => moveCurrentFrame(-1)}
+                                    disabled={currentFrameIndex === 0}
+                                    className="px-2 py-1 rounded bg-white border border-gray-300 text-[11px] font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                    title="このフレームを1つ前へ移動"
+                                >
+                                    前へ
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => moveCurrentFrame(1)}
+                                    disabled={currentFrameIndex === frames.length - 1}
+                                    className="px-2 py-1 rounded bg-white border border-gray-300 text-[11px] font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                    title="このフレームを1つ後ろへ移動"
+                                >
+                                    後ろへ
+                                </button>
+                            </div>
                         </div>
 
                         {/* 各コマ個別の配置・変形トグル */}
