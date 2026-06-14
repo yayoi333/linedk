@@ -197,35 +197,18 @@ export function calculateCRC32(type: string, data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function gcd(a: number, b: number): number {
-  let x = Math.abs(Math.round(a));
-  let y = Math.abs(Math.round(b));
-  while (y !== 0) {
-    const next = x % y;
-    x = y;
-    y = next;
-  }
-  return x || 1;
-}
-
 function getFrameDelay(fps: number, frameCount: number, durationSeconds?: number): { numerator: number; denominator: number } {
   if (durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0) {
-    const durationMs = Math.round(durationSeconds * 1000);
-    const denominatorBase = frameCount * 1000;
-    const divisor = gcd(durationMs, denominatorBase);
     return {
-      numerator: Math.max(1, durationMs / divisor),
-      denominator: Math.max(1, denominatorBase / divisor),
+      numerator: Math.max(1, Math.round((durationSeconds * 1000) / frameCount)),
+      denominator: 1000,
     };
   }
 
   const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 1;
-  const fpsBase = 1000;
-  const delayMs = Math.max(1, Math.round(fpsBase / safeFps));
-  const divisor = gcd(delayMs, fpsBase);
   return {
-    numerator: delayMs / divisor,
-    denominator: fpsBase / divisor,
+    numerator: Math.max(1, Math.round(1000 / safeFps)),
+    denominator: 1000,
   };
 }
 
