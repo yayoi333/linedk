@@ -358,9 +358,10 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
            </div>
         );
     }
+    const displayScale = width === MAIN_WIDTH && height === MAIN_HEIGHT ? 0.65 : 1;
     return (
         <div className="mt-2 flex justify-center bg-gray-100 rounded border border-gray-200 p-2 cursor-pointer hover:ring-2 hover:ring-primary-300 transition relative group" onClick={onClick}>
-           <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ width, height, maxWidth: '100%' }} />
+           <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ width: width * displayScale, height: height * displayScale, maxWidth: '100%' }} />
            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors pointer-events-none">
               <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-xs px-2 py-1 rounded-full font-bold shadow-sm text-gray-700">編集</span>
            </div>
@@ -817,10 +818,11 @@ const compileAnimatedStamp = async (
     bgColor: string,
     tolerance: number,
     algorithm: 'chromakey' | 'floodfill'
-  ): Promise<{ blob: Blob; dataUrls: string[]; fps: number; info: APNGInfo }> => {
+  ): Promise<{ blob: Blob; dataUrls: string[]; rawDataUrls: string[]; fps: number; info: APNGInfo }> => {
     const build = async (frameStep: number) => {
       const frameData: Uint8Array[] = [];
       const dataUrls: string[] = [];
+      const rawDataUrls: string[] = [];
 
       for (let f = 0; f < originalFrames.length; f += frameStep) {
         const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -829,6 +831,22 @@ const compileAnimatedStamp = async (
           i.onerror = reject;
           i.src = originalFrames[f];
         });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = LINE_APNG_WIDTH;
+        canvas.height = LINE_APNG_HEIGHT;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) continue;
+
+        const fitScale = Math.min(LINE_APNG_WIDTH / img.width, LINE_APNG_HEIGHT / img.height);
+        const drawW = Math.max(1, Math.round(img.width * fitScale));
+        const drawH = Math.max(1, Math.round(img.height * fitScale));
+        const drawX = Math.round((LINE_APNG_WIDTH - drawW) / 2);
+        const drawY = Math.round((LINE_APNG_HEIGHT - drawH) / 2);
+
+        ctx.clearRect(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
+        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+        rawDataUrls.push(canvas.toDataURL('image/png'));
 
         const sourceCanvas = document.createElement('canvas');
         sourceCanvas.width = img.width;
@@ -846,17 +864,7 @@ const compileAnimatedStamp = async (
         );
         sourceCtx.putImageData(processedImgData, 0, 0);
 
-        const canvas = document.createElement('canvas');
-        canvas.width = LINE_APNG_WIDTH;
-        canvas.height = LINE_APNG_HEIGHT;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) continue;
         ctx.clearRect(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
-        const fitScale = Math.min(LINE_APNG_WIDTH / img.width, LINE_APNG_HEIGHT / img.height);
-        const drawW = Math.max(1, Math.round(img.width * fitScale));
-        const drawH = Math.max(1, Math.round(img.height * fitScale));
-        const drawX = Math.round((LINE_APNG_WIDTH - drawW) / 2);
-        const drawY = Math.round((LINE_APNG_HEIGHT - drawH) / 2);
         ctx.drawImage(sourceCanvas, drawX, drawY, drawW, drawH);
 
         const finalImageData = ctx.getImageData(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
@@ -876,6 +884,7 @@ const compileAnimatedStamp = async (
       return {
         blob: result.blob,
         dataUrls,
+        rawDataUrls,
         fps: frameData.length / playbackDuration,
         info: result.info,
         over: result.over,
@@ -1122,6 +1131,7 @@ const compileAnimatedStamp = async (
         );
         const apngBlob = optimized.blob;
         const finalFramesDataUrls = optimized.dataUrls;
+        const rawFramesDataUrls = optimized.rawDataUrls;
         logAPNGInfo(`No.${String(bIdx + 1).padStart(2, '0')}`, optimized.info);
 
         const reader = new FileReader();
@@ -1141,7 +1151,7 @@ const compileAnimatedStamp = async (
           width: box.w,
           height: box.h,
           dataUrl: apngUrl,
-          originalDataUrl: stampRawOriginalFrames[bIdx][0] || finalFramesDataUrls[0], // static first frame RAW original image URL
+          originalDataUrl: rawFramesDataUrls[0] || finalFramesDataUrls[0],
           isExcluded: false,
           scale: initialScale, // No longer cap to 1.0 to ensure smaller clips perfectly fit layout coordinates
           rotation: 0,
@@ -1149,7 +1159,7 @@ const compileAnimatedStamp = async (
           offsetY: 0,
           isAnimated: true,
           rawFrames: finalFramesDataUrls,
-          rawOriginalFrames: stampRawOriginalFrames[bIdx],
+          rawOriginalFrames: rawFramesDataUrls,
           fps: finalFramesDataUrls.length / animDuration,
           playbackDuration: animDuration,
           apngInfo: optimized.info
@@ -2234,6 +2244,7 @@ Description: アニメーションLINEスタンプ (APNG)
         );
         const apngBlob = optimized.blob;
         const finalFramesDataUrls = optimized.dataUrls;
+        const rawFramesDataUrls = optimized.rawDataUrls;
         logAPNGInfo(targetReplaceId ? `replace:${targetReplaceId}` : 'new-cutout', optimized.info);
 
         const reader = new FileReader();
@@ -2248,10 +2259,10 @@ Description: アニメーションLINEスタンプ (APNG)
           ...croppedStamp,
           scale: initialScale, // No longer cap to 1.0 to guarantee list/editor rendering alignment
           dataUrl: apngUrl,
-          originalDataUrl: stampRawOriginalFrames[0] || finalFramesDataUrls[0],
+          originalDataUrl: rawFramesDataUrls[0] || finalFramesDataUrls[0],
           isAnimated: true,
           rawFrames: finalFramesDataUrls,
-          rawOriginalFrames: stampRawOriginalFrames,
+          rawOriginalFrames: rawFramesDataUrls,
           fps: finalFramesDataUrls.length / animDuration,
           playbackDuration: animDuration,
           apngInfo: optimized.info

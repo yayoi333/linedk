@@ -354,20 +354,53 @@ export const StampEditorModal: React.FC<Props> = ({
   const [sourceSize, setSourceSize] = useState({ w: stamp.width, h: stamp.height });
   const originalLoadSeqRef = useRef(0);
 
-  const loadOriginalImage = (url?: string) => {
+  const loadImageElement = (url: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+
+  const loadOriginalImage = (url?: string, matchFrameUrl?: string) => {
     const seq = ++originalLoadSeqRef.current;
     if (!url) {
       setOriginalImage(null);
       return;
     }
-    const img = new Image();
-    img.src = url;
-    img.onload = () => {
-      if (originalLoadSeqRef.current === seq) setOriginalImage(img);
-    };
-    img.onerror = () => {
+    Promise.all([
+      loadImageElement(url),
+      matchFrameUrl ? loadImageElement(matchFrameUrl) : Promise.resolve(null)
+    ]).then(([img, matchImg]) => {
+      if (originalLoadSeqRef.current !== seq) return;
+      if (!matchImg || (img.width === matchImg.width && img.height === matchImg.height)) {
+        setOriginalImage(img);
+        return;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = matchImg.width;
+      canvas.height = matchImg.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        setOriginalImage(img);
+        return;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const fitScale = Math.min(canvas.width / img.width, canvas.height / img.height);
+      const drawW = Math.max(1, Math.round(img.width * fitScale));
+      const drawH = Math.max(1, Math.round(img.height * fitScale));
+      const drawX = Math.round((canvas.width - drawW) / 2);
+      const drawY = Math.round((canvas.height - drawH) / 2);
+      ctx.drawImage(img, drawX, drawY, drawW, drawH);
+
+      const normalized = new Image();
+      normalized.onload = () => {
+        if (originalLoadSeqRef.current === seq) setOriginalImage(normalized);
+      };
+      normalized.src = canvas.toDataURL('image/png');
+    }).catch(() => {
       if (originalLoadSeqRef.current === seq) setOriginalImage(null);
-    };
+    });
   };
 
   const setWorkingDataUrl = (val: string | ((prev: string) => string)) => {
@@ -541,7 +574,7 @@ export const StampEditorModal: React.FC<Props> = ({
         ? (initOriginalFrames[0] || stamp.originalDataUrl || initFrames[0])
         : (staticFrameSourceFrames?.[initialStaticFrameIndex] || stamp.originalDataUrl);
 
-      loadOriginalImage(firstOrigUrl);
+      loadOriginalImage(firstOrigUrl, stamp.isAnimated ? initFrames[0] : undefined);
 
       // Load Materials
       loadMaterials().then(setMaterials).catch(console.error);
@@ -554,7 +587,7 @@ export const StampEditorModal: React.FC<Props> = ({
       setWorkingDataUrlState(frames[currentFrameIndex]);
       
       const orig = originalFrames[currentFrameIndex] || stamp.originalDataUrl || frames[currentFrameIndex];
-      loadOriginalImage(orig);
+      loadOriginalImage(orig, frames[currentFrameIndex]);
       
       setTextObjectsState(framesTextObjects[currentFrameIndex] || []);
       setImageLayersState(framesImageLayers[currentFrameIndex] || []);
@@ -582,7 +615,7 @@ export const StampEditorModal: React.FC<Props> = ({
     setStaticSelectedFrameIndex(frameIndex);
     onStaticFrameSelect?.(frameIndex);
     setWorkingDataUrlState(frameUrl);
-    loadOriginalImage(frameUrl);
+    loadOriginalImage(frameUrl, frameUrl);
     addToHistory({ dataUrl: frameUrl });
   };
 
