@@ -137,6 +137,7 @@ export interface ExportConfig {
   sourceWidth?: number;
   sourceHeight?: number;
   customDataUrl?: string; // If edited specifically for Main/Tab (eraser etc)
+  selectedFrameIndex?: number; // Static frame used when deriving Main/Tab from animated stamps
   textObjects?: TextObject[]; // Added text objects for Main/Tab
   
   // Future features

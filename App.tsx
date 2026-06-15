@@ -272,7 +272,8 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
                 }
                 renderAllLayers(ctx, img, config, width, height, layerCacheRef.current);
             };
-            img.src = s.isAnimated ? (s.rawFrames?.[0] || s.dataUrl) : (config.customDataUrl || s.dataUrl);
+            const frameIndex = config.selectedFrameIndex ?? 0;
+            img.src = config.customDataUrl || (s.isAnimated ? (s.rawFrames?.[frameIndex] || s.rawFrames?.[0] || s.dataUrl) : s.dataUrl);
         };
         draw();
     }, [config, s, width, height, previewBg]);
@@ -285,7 +286,7 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
     }
     return (
         <div className="mt-2 flex justify-center bg-gray-100 rounded border border-gray-200 p-2 cursor-pointer hover:ring-2 hover:ring-primary-300 transition relative group" onClick={onClick}>
-           <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ maxWidth: '100%', height: 'auto', maxHeight: '120px' }} />
+           <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ width: width * 1.25, height: height * 1.25, maxWidth: '100%' }} />
            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors pointer-events-none">
               <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-xs px-2 py-1 rounded-full font-bold shadow-sm text-gray-700">編集</span>
            </div>
@@ -336,10 +337,12 @@ export default function App() {
   });
 
   const validStampsCount = stamps.filter(s => !s.isExcluded).length;
-  const allowedCounts = [8, 16, 24, 32, 40];
-  const nextTarget = allowedCounts.find(c => c >= validStampsCount) || 40;
+  const isAnimatedSet = stamps.some(s => s.isAnimated);
+  const allowedCounts = isAnimatedSet ? [8, 16, 24] : [8, 16, 24, 32, 40];
+  const maxAllowedCount = allowedCounts[allowedCounts.length - 1];
+  const nextTarget = allowedCounts.find(c => c >= validStampsCount) || maxAllowedCount;
   const isExactCount = allowedCounts.includes(validStampsCount);
-  const isOverLimit = validStampsCount > 40;
+  const isOverLimit = validStampsCount > maxAllowedCount;
   const [isTranslating, setIsTranslating] = useState(false);
   const [descriptionHintOpen, setDescriptionHintOpen] = useState(false);
 
@@ -1079,7 +1082,7 @@ const compileAnimatedStamp = async (
   const downloadSingleAnimStamp = (stamp: AnimatedStampResult) => {
     const link = document.createElement('a');
     link.href = stamp.apngUrl;
-    link.download = stamp.fileName;
+    link.download = stamp.fileName.replace(/^animated_?/i, 'AniSticker_');
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1109,7 +1112,7 @@ Description: アニメーションLINEスタンプ (APNG)
       const link = document.createElement('a');
       link.href = URL.createObjectURL(content);
       const timeStr = new Date().toTimeString().split(' ')[0].replace(/:/g, '');
-      link.download = `animated_stickers_${dateStr}_${timeStr}.zip`;
+      link.download = `AniSticker_${dateStr}_${timeStr}.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -1724,38 +1727,41 @@ Description: アニメーションLINEスタンプ (APNG)
   };
 
   const setDefaultMainTab = (stamp: Stamp) => {
-      setMainConfig({
-          id: stamp.id,
-          scale: calculateFitScale(stamp.width, stamp.height, MAIN_WIDTH, MAIN_HEIGHT),
-          offsetX: 0, 
-          offsetY: 0,
-          rotation: 0,
-          flipH: false,
-          flipV: false,
-          textObjects: stamp.textObjects ? JSON.parse(JSON.stringify(stamp.textObjects)) : [],
-          imageLayers: stamp.imageLayers ? JSON.parse(JSON.stringify(stamp.imageLayers)) : [],
-          drawingStrokes: stamp.drawingStrokes ? JSON.parse(JSON.stringify(stamp.drawingStrokes)) : [],
-          mainImageLayerOrder: 100
-      });
-      setTabConfig({
-          id: stamp.id,
-          scale: calculateFitScale(stamp.width, stamp.height, TAB_WIDTH, TAB_HEIGHT),
-          offsetX: 0,
-          offsetY: 0,
-          rotation: 0,
-          flipH: false,
-          flipV: false,
-          textObjects: stamp.textObjects ? JSON.parse(JSON.stringify(stamp.textObjects)) : [],
-          imageLayers: stamp.imageLayers ? JSON.parse(JSON.stringify(stamp.imageLayers)) : [],
-          drawingStrokes: stamp.drawingStrokes ? JSON.parse(JSON.stringify(stamp.drawingStrokes)) : [],
-          mainImageLayerOrder: 100
-      });
+      setMainConfig(createSpecialConfig(stamp, MAIN_WIDTH, MAIN_HEIGHT));
+      setTabConfig(createSpecialConfig(stamp, TAB_WIDTH, TAB_HEIGHT));
   };
 
   const calculateFitScale = (w: number, h: number, targetW: number, targetH: number) => {
       const scaleW = targetW / w;
       const scaleH = targetH / h;
       return Math.min(scaleW, scaleH);
+  };
+
+  const getSpecialSourceSize = (stamp: Stamp) => {
+      if (stamp.isAnimated) {
+          return { w: LINE_APNG_WIDTH, h: LINE_APNG_HEIGHT };
+      }
+      return { w: stamp.width, h: stamp.height };
+  };
+
+  const createSpecialConfig = (stamp: Stamp, targetW: number, targetH: number, selectedFrameIndex = 0): ExportConfig => {
+      const sourceSize = getSpecialSourceSize(stamp);
+      return {
+          id: stamp.id,
+          scale: calculateFitScale(sourceSize.w, sourceSize.h, targetW, targetH),
+          offsetX: 0,
+          offsetY: 0,
+          rotation: 0,
+          flipH: false,
+          flipV: false,
+          sourceWidth: sourceSize.w,
+          sourceHeight: sourceSize.h,
+          selectedFrameIndex,
+          textObjects: [],
+          imageLayers: [],
+          drawingStrokes: [],
+          mainImageLayerOrder: 100
+      };
   };
 
   const updateStamp = (updatedStamp: Stamp) => {
@@ -1835,6 +1841,9 @@ Description: アニメーションLINEスタンプ (APNG)
 
   const handleExport = async () => {
     if (!mainConfig || !tabConfig) return alert('メイン画像とタブ画像を選択してください');
+    if (!isExactCount) {
+      return alert(`申請可能個数は ${allowedCounts.join(' / ')} 個です。現在は ${validStampsCount} 個です。`);
+    }
     await createAndDownloadZip(stamps, mainConfig, tabConfig, meta, renumber);
     await saveProject(stamps, sourceImages, mainConfig, tabConfig, meta, globalTolerance, gapTolerance, previewBg);
     setLastSavedAt(new Date().toISOString());
@@ -1849,7 +1858,7 @@ Description: アニメーションLINEスタンプ (APNG)
           const blob = await res.blob();
           const link = document.createElement('a');
           link.href = URL.createObjectURL(blob);
-          link.download = `stamp_animated_${stamp.id.replace(/stamp-animated-/, '')}.png`;
+          link.download = `AniSticker_${stamp.id.replace(/stamp-animated-/, '')}.png`;
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
@@ -1879,7 +1888,7 @@ Description: アニメーションLINEスタンプ (APNG)
       if (!blob) return;
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = `stamp_${stamp.id}.png`;
+      link.download = `AniSticker_${stamp.id}.png`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -1892,9 +1901,9 @@ Description: アニメーションLINEスタンプ (APNG)
       
       let blob: Blob | null = null;
       if (stamp.isAnimated) {
-        // Main/Tab must be static, so extract the static first frame of rawFrames
-        const firstFrameUrl = stamp.rawFrames?.[0] || stamp.dataUrl;
-        blob = await createFinalImageBlob(firstFrameUrl, config, width, height);
+        const frameIndex = config.selectedFrameIndex ?? 0;
+        const frameUrl = config.customDataUrl || stamp.rawFrames?.[frameIndex] || stamp.rawFrames?.[0] || stamp.dataUrl;
+        blob = await createFinalImageBlob(frameUrl, config, width, height);
       } else {
         const sourceUrl = config.customDataUrl || stamp.dataUrl;
         blob = await createFinalImageBlob(sourceUrl, config, width, height);
@@ -1906,6 +1915,43 @@ Description: アニメーションLINEスタンプ (APNG)
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+  };
+
+  const getSpecialSourceUrl = (stamp: Stamp, config: ExportConfig | null) => {
+      if (!config) return stamp.dataUrl;
+      if (config.customDataUrl) return config.customDataUrl;
+      if (stamp.isAnimated) {
+          const frameIndex = config.selectedFrameIndex ?? 0;
+          return stamp.rawFrames?.[frameIndex] || stamp.rawFrames?.[0] || stamp.dataUrl;
+      }
+      return stamp.dataUrl;
+  };
+
+  const getSpecialEditingStamp = () => {
+      if (!editingStamp || !editingSpecialType) return editingStamp;
+      const config = editingSpecialType === 'main' ? mainConfig : tabConfig;
+      if (!config) return editingStamp;
+      const sourceSize = getSpecialSourceSize(editingStamp);
+      return {
+          ...editingStamp,
+          dataUrl: getSpecialSourceUrl(editingStamp, config),
+          originalDataUrl: getSpecialSourceUrl(editingStamp, config),
+          isAnimated: false,
+          rawFrames: undefined,
+          rawOriginalFrames: undefined,
+          width: sourceSize.w,
+          height: sourceSize.h,
+          scale: config.scale,
+          rotation: config.rotation ?? 0,
+          offsetX: config.offsetX,
+          offsetY: config.offsetY,
+          flipH: config.flipH,
+          flipV: config.flipV,
+          textObjects: config.textObjects ?? [],
+          imageLayers: config.imageLayers ?? [],
+          drawingStrokes: config.drawingStrokes ?? [],
+          mainImageLayerOrder: config.mainImageLayerOrder ?? 100
+      } satisfies Stamp;
   };
 
   const toggleExclude = (id: string) => {
@@ -2096,41 +2142,25 @@ Description: アニメーションLINEスタンプ (APNG)
   const handleMainSelect = (id: string) => {
       const s = stamps.find(stamp => stamp.id === id);
       if(s) {
-          setMainConfig({
-              id: s.id,
-              scale: calculateFitScale(s.width, s.height, MAIN_WIDTH, MAIN_HEIGHT),
-              offsetX: 0,
-              offsetY: 0,
-              customDataUrl: undefined,
-              rotation: 0,
-              flipH: false,
-              flipV: false,
-              textObjects: s.textObjects ? JSON.parse(JSON.stringify(s.textObjects)) : [],
-              imageLayers: s.imageLayers ? JSON.parse(JSON.stringify(s.imageLayers)) : [],
-              drawingStrokes: s.drawingStrokes ? JSON.parse(JSON.stringify(s.drawingStrokes)) : [],
-              mainImageLayerOrder: 100
-          });
+          setMainConfig(createSpecialConfig(s, MAIN_WIDTH, MAIN_HEIGHT));
       }
   };
 
   const handleTabSelect = (id: string) => {
       const s = stamps.find(stamp => stamp.id === id);
       if(s) {
-          setTabConfig({
-              id: s.id,
-              scale: calculateFitScale(s.width, s.height, TAB_WIDTH, TAB_HEIGHT),
-              offsetX: 0,
-              offsetY: 0,
-              customDataUrl: undefined,
-              rotation: 0,
-              flipH: false,
-              flipV: false,
-              textObjects: s.textObjects ? JSON.parse(JSON.stringify(s.textObjects)) : [],
-              imageLayers: s.imageLayers ? JSON.parse(JSON.stringify(s.imageLayers)) : [],
-              drawingStrokes: s.drawingStrokes ? JSON.parse(JSON.stringify(s.drawingStrokes)) : [],
-              mainImageLayerOrder: 100
-          });
+          setTabConfig(createSpecialConfig(s, TAB_WIDTH, TAB_HEIGHT));
       }
+  };
+
+  const handleTabFrameSelect = (frameIndex: number) => {
+      if (!tabConfig) return;
+      const stamp = stamps.find(s => s.id === tabConfig.id);
+      if (!stamp) return;
+      setTabConfig({
+          ...createSpecialConfig(stamp, TAB_WIDTH, TAB_HEIGHT, frameIndex),
+          id: tabConfig.id
+      });
   };
 
   const handleReCropFromEditor = (stamp: Stamp) => {
@@ -2896,7 +2926,7 @@ Description: アニメーションLINEスタンプ (APNG)
                         <div className="text-xs text-gray-500 mt-2 bg-blue-50 p-2 rounded border border-blue-100">
                              <div className="flex items-start gap-1">
                                 <Info size={14} className="text-blue-500 mt-0.5 shrink-0" />
-                                <div><span className="font-bold text-blue-600">申請可能個数:</span> 8, 16, 24, 32, 40個<br/>{isExactCount ? <span className="text-green-600 font-bold">現在 {validStampsCount}個 (申請可能です！)</span> : <>{isOverLimit ? <span className="text-orange-600 font-bold">40個を超えています。</span> : <span className="text-orange-600">次は <span className="font-bold">{nextTarget}個</span> を目指しましょう</span>}</>}<br/><span className="opacity-70 text-[10px]">※不足していると申請できません。</span></div>
+                                <div><span className="font-bold text-blue-600">申請可能個数:</span> {allowedCounts.join(', ')}個<br/>{isExactCount ? <span className="text-green-600 font-bold">現在 {validStampsCount}個 (申請可能です！)</span> : <>{isOverLimit ? <span className="text-orange-600 font-bold">{maxAllowedCount}個を超えています。</span> : <span className="text-orange-600">次は <span className="font-bold">{nextTarget}個</span> を目指しましょう</span>}</>}<br/><span className="opacity-70 text-[10px]">※不足していると申請できません。</span></div>
                              </div>
                         </div>
                     </div>
@@ -3021,6 +3051,21 @@ Description: アニメーションLINEスタンプ (APNG)
                         <div>
                              <div className="flex justify-between items-end mb-1"><label className="block text-sm font-medium text-gray-600">タブ画像 (96x74)</label><button onClick={() => downloadSpecialStamp(tabConfig, TAB_WIDTH, TAB_HEIGHT, 'tab.png')} disabled={!tabConfig} className="text-gray-400 hover:text-primary-600 disabled:opacity-30" title="ダウンロード"><Download size={18} /></button></div>
                             <select className="w-full border-gray-300 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 mb-2 bg-primary-50" value={tabConfig?.id || ''} onChange={(e) => handleTabSelect(e.target.value)}>{stamps.map((s, i) => (<option key={s.id} value={s.id}>{s.isExcluded ? `(除外) スタンプ ${i + 1}` : `No.${i + 1} のスタンプ`}</option>))}</select>
+                            {(() => {
+                              const selectedTabStamp = tabConfig ? stamps.find(s => s.id === tabConfig.id) : null;
+                              if (!selectedTabStamp?.isAnimated || !selectedTabStamp.rawFrames?.length) return null;
+                              return (
+                                <select
+                                  className="w-full border-gray-300 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 mb-2 bg-white text-sm"
+                                  value={tabConfig?.selectedFrameIndex ?? 0}
+                                  onChange={(e) => handleTabFrameSelect(Number(e.target.value))}
+                                >
+                                  {selectedTabStamp.rawFrames.map((_, idx) => (
+                                    <option key={idx} value={idx}>タブに使うコマ: {idx + 1}</option>
+                                  ))}
+                                </select>
+                              );
+                            })()}
                             <CanvasPreview config={tabConfig} width={TAB_WIDTH} height={TAB_HEIGHT} previewBg={previewBg} stamps={stamps} onClick={() => { setEditingSpecialType('tab'); const s = stamps.find(x => x.id === tabConfig?.id); if(s) setEditingStamp(s); }} />
                         </div>
                     </div>
@@ -3047,7 +3092,7 @@ Description: アニメーションLINEスタンプ (APNG)
       </main>
       
       {editingStamp && (
-        <StampEditorModal stamp={editingStamp} isOpen={!!editingStamp} onClose={() => { setEditingStamp(null); setEditingSpecialType(null); }} onSave={async (updated) => { setEditingStamp(null); let finalStamp = updated; if (updated.isAnimated) { setIsProcessing(true); try { finalStamp = await recompileAnimatedStamp(updated); } catch (e: any) { console.error(e); alert(e?.message || '1MB以内にできません。'); setIsProcessing(false); return; } finally { setIsProcessing(false); } } if (editingSpecialType) { updateSpecialConfig(finalStamp); } else { updateStamp(finalStamp); } }} onReCrop={() => handleReCropFromEditor(editingStamp)} initialPreviewBg={previewBg} targetWidth={editingSpecialType === 'main' ? MAIN_WIDTH : (editingSpecialType === 'tab' ? TAB_WIDTH : TARGET_WIDTH)} targetHeight={editingSpecialType === 'main' ? MAIN_HEIGHT : (editingSpecialType === 'tab' ? TAB_HEIGHT : TARGET_HEIGHT)} initialScale={editingSpecialType === 'main' ? mainConfig?.scale : editingSpecialType === 'tab' ? tabConfig?.scale : undefined} initialRotation={editingSpecialType === 'main' ? mainConfig?.rotation : editingSpecialType === 'tab' ? tabConfig?.rotation : undefined} initialOffset={editingSpecialType === 'main' ? {x: mainConfig?.offsetX || 0, y: mainConfig?.offsetY || 0} : editingSpecialType === 'tab' ? {x: tabConfig?.offsetX || 0, y: tabConfig?.offsetY || 0} : undefined} initialTextObjects={editingSpecialType === 'main' ? mainConfig?.textObjects : editingSpecialType === 'tab' ? tabConfig?.textObjects : undefined} initialImageLayers={editingSpecialType === 'main' ? mainConfig?.imageLayers : editingSpecialType === 'tab' ? tabConfig?.imageLayers : undefined} initialDrawingStrokes={editingSpecialType === 'main' ? mainConfig?.drawingStrokes : editingSpecialType === 'tab' ? tabConfig?.drawingStrokes : undefined} />
+        <StampEditorModal stamp={getSpecialEditingStamp() || editingStamp} isOpen={!!editingStamp} onClose={() => { setEditingStamp(null); setEditingSpecialType(null); }} onSave={async (updated) => { setEditingStamp(null); let finalStamp = updated; if (updated.isAnimated) { setIsProcessing(true); try { finalStamp = await recompileAnimatedStamp(updated); } catch (e: any) { console.error(e); alert(e?.message || '1MB以内にできません。'); setIsProcessing(false); return; } finally { setIsProcessing(false); } } if (editingSpecialType) { updateSpecialConfig(finalStamp); } else { updateStamp(finalStamp); } }} onReCrop={() => handleReCropFromEditor(editingStamp)} initialPreviewBg={previewBg} targetWidth={editingSpecialType === 'main' ? MAIN_WIDTH : (editingSpecialType === 'tab' ? TAB_WIDTH : TARGET_WIDTH)} targetHeight={editingSpecialType === 'main' ? MAIN_HEIGHT : (editingSpecialType === 'tab' ? TAB_HEIGHT : TARGET_HEIGHT)} initialScale={editingSpecialType === 'main' ? mainConfig?.scale : editingSpecialType === 'tab' ? tabConfig?.scale : undefined} initialRotation={editingSpecialType === 'main' ? mainConfig?.rotation : editingSpecialType === 'tab' ? tabConfig?.rotation : undefined} initialOffset={editingSpecialType === 'main' ? {x: mainConfig?.offsetX || 0, y: mainConfig?.offsetY || 0} : editingSpecialType === 'tab' ? {x: tabConfig?.offsetX || 0, y: tabConfig?.offsetY || 0} : undefined} initialTextObjects={editingSpecialType === 'main' ? mainConfig?.textObjects : editingSpecialType === 'tab' ? tabConfig?.textObjects : undefined} initialImageLayers={editingSpecialType === 'main' ? mainConfig?.imageLayers : editingSpecialType === 'tab' ? tabConfig?.imageLayers : undefined} initialDrawingStrokes={editingSpecialType === 'main' ? mainConfig?.drawingStrokes : editingSpecialType === 'tab' ? tabConfig?.drawingStrokes : undefined} />
       )}
 
       {showSourceSelectModal && (

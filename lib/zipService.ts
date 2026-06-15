@@ -42,7 +42,7 @@ export const createAndDownloadZip = async (
 
     const fileName = renumber 
       ? `${String(counter).padStart(2, '0')}.png` 
-      : `${stamp.id.replace(/stamp-.*?-/, '')}.png`; // Simplified replace logic
+      : `AniSticker_${stamp.id.replace(/stamp-.*?-/, '')}.png`; // Simplified replace logic
     
     zip.file(fileName, blob);
     counter++;
@@ -55,8 +55,9 @@ export const createAndDownloadZip = async (
         let mainBlob: Blob | null = null;
         if (mainStamp.isAnimated) {
           // Animated stickers require a static Main image
-          const firstFrameUrl = mainStamp.rawFrames?.[0] || mainStamp.dataUrl;
-          mainBlob = await createFinalImageBlob(firstFrameUrl, mainConfig, MAIN_WIDTH, MAIN_HEIGHT);
+          const frameIndex = mainConfig.selectedFrameIndex ?? 0;
+          const frameUrl = mainConfig.customDataUrl || mainStamp.rawFrames?.[frameIndex] || mainStamp.rawFrames?.[0] || mainStamp.dataUrl;
+          mainBlob = await createFinalImageBlob(frameUrl, mainConfig, MAIN_WIDTH, MAIN_HEIGHT);
         } else {
           const sourceUrl = mainConfig.customDataUrl || mainStamp.dataUrl;
           mainBlob = await createFinalImageBlob(sourceUrl, mainConfig, MAIN_WIDTH, MAIN_HEIGHT);
@@ -71,8 +72,9 @@ export const createAndDownloadZip = async (
     if (tabStamp) {
         let tabBlob: Blob | null = null;
         if (tabStamp.isAnimated) {
-          const firstFrameUrl = tabStamp.rawFrames?.[0] || tabStamp.dataUrl;
-          tabBlob = await createFinalImageBlob(firstFrameUrl, tabConfig, TAB_WIDTH, TAB_HEIGHT);
+          const frameIndex = tabConfig.selectedFrameIndex ?? 0;
+          const frameUrl = tabConfig.customDataUrl || tabStamp.rawFrames?.[frameIndex] || tabStamp.rawFrames?.[0] || tabStamp.dataUrl;
+          tabBlob = await createFinalImageBlob(frameUrl, tabConfig, TAB_WIDTH, TAB_HEIGHT);
         } else {
           const sourceUrl = tabConfig.customDataUrl || tabStamp.dataUrl;
           tabBlob = await createFinalImageBlob(sourceUrl, tabConfig, TAB_WIDTH, TAB_HEIGHT);
@@ -117,7 +119,7 @@ Description: ${metaData.stampDescEn}
   const link = document.createElement('a');
   link.href = URL.createObjectURL(content);
   const timeStr = new Date().toTimeString().split(' ')[0].replace(/:/g, '');
-  link.download = `stickers_${dateStr}_${timeStr}.zip`;
+  link.download = `AniSticker_${dateStr}_${timeStr}.zip`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
