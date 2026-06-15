@@ -102,7 +102,7 @@ export interface Stamp {
   isAnimated?: boolean; // 動くスタンプかどうか
   rawFrames?: string[]; // 各フレームの透過済み画像 (base64)
   fps?: number; // アニメーション速度
-  playbackDuration?: number; // APNG全体の再生秒数（LINE規定: 1/2/3/4秒）
+  playbackDuration?: number; // 1ループの再生秒数（LINE規定: 1/2/3/4秒）
   apngInfo?: {
     width: number;
     height: number;

@@ -397,6 +397,9 @@ export async function buildAPNG({
   if (frames.length === 0) {
     throw new Error('APNG creation requires at least one frame.');
   }
+  if (!Number.isInteger(loops) || loops < 1 || loops > 4) {
+    throw new Error('loop 0 は使用できません。APNGのループ回数は1〜4回にしてください。');
+  }
 
   let imgs: Uint8Array[];
   let bpp: number;
@@ -489,6 +492,10 @@ export async function encodeAutoAPNG({
   loops: number;
   maxBytes?: number;
 }): Promise<APNGEncodeResult> {
+  if (!Number.isInteger(loops) || loops < 1 || loops > 4) {
+    throw new Error('loop 0 は使用できません。APNGのループ回数は1〜4回にしてください。');
+  }
+
   let best: { bytes: Uint8Array; colors: number } | null = null;
   for (const colors of [0, 256, 128, 64, 32, 16]) {
     const bytes = await buildAPNG({ w, h, frames, delays, loops, colors });
@@ -505,7 +512,7 @@ export async function encodeAutoAPNG({
           height: h,
           byteSize: bytes.length,
           frameCount: frames.length,
-          totalDuration: (delay * frames.length) / 1000,
+          totalDuration: (delay * frames.length * loops) / 1000,
           delay,
           loops,
           colors,
@@ -529,7 +536,7 @@ export async function encodeAutoAPNG({
       height: h,
       byteSize: best.bytes.length,
       frameCount: frames.length,
-      totalDuration: (delay * frames.length) / 1000,
+      totalDuration: (delay * frames.length * loops) / 1000,
       delay,
       loops,
       colors: best.colors,

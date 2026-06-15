@@ -155,6 +155,17 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / 1024).toFixed(0)}KB`;
 };
 
+const getLineLoopCount = (playbackDuration: number) => {
+  if (!LINE_ANIMATION_DURATIONS.includes(playbackDuration as typeof LINE_ANIMATION_DURATIONS[number])) {
+    throw new Error('再生時間はLINE規定に合わせて1秒 / 2秒 / 3秒 / 4秒から選択してください。');
+  }
+  const loops = Math.floor(4 / playbackDuration);
+  if (loops < 1 || loops > 4) {
+    throw new Error('loop 0 は使用できません。LINE規定に合わせてループ数は1〜4回にしてください。');
+  }
+  return loops;
+};
+
 async function sha256(message: string) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -656,12 +667,13 @@ const compileAnimatedStamp = async (
     const duration = config.playbackDuration ?? Math.max(1, Math.min(4, Math.round(frameData.length / Math.max(1, config.fps))));
     const delay = (duration * 1000) / frameData.length;
     const delays = new Array(frameData.length).fill(delay);
+    const loops = getLineLoopCount(duration);
     return encodeAutoAPNG({
       w: LINE_APNG_WIDTH,
       h: LINE_APNG_HEIGHT,
       frames: frameData,
       delays,
-      loops: 0,
+      loops,
       maxBytes: MAX_APNG_BYTES,
     });
   };
@@ -741,7 +753,7 @@ const compileAnimatedStamp = async (
         h: LINE_APNG_HEIGHT,
         frames: frameData,
         delays: new Array(frameData.length).fill(delay),
-        loops: 0,
+        loops: getLineLoopCount(playbackDuration),
         maxBytes: MAX_APNG_BYTES,
       });
       return {
