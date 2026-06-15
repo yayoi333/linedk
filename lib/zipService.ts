@@ -2,6 +2,36 @@
 import JSZip from 'jszip';
 import { Stamp, MetaData, ExportConfig, TextObject, ImageLayerObject, DrawingStroke, TARGET_WIDTH, TARGET_HEIGHT, MAIN_WIDTH, MAIN_HEIGHT, TAB_WIDTH, TAB_HEIGHT } from '../types';
 import { getSortedLayers } from './layerUtils';
+import { APNGInfo, encodeAutoAPNG } from './animatedStampService';
+
+const MAX_APNG_BYTES = 1024 * 1024;
+const LINE_ANIMATION_DURATIONS = [1, 2, 3, 4] as const;
+
+const getLineLoopCount = (playbackDuration: number) => {
+  if (!LINE_ANIMATION_DURATIONS.includes(playbackDuration as typeof LINE_ANIMATION_DURATIONS[number])) {
+    throw new Error('再生時間はLINE規定に合わせて1秒 / 2秒 / 3秒 / 4秒から選択してください。');
+  }
+  const loops = Math.floor(4 / playbackDuration);
+  if (loops < 1 || loops > 4) {
+    throw new Error('loop 0 は使用できません。LINE規定に合わせてループ数は1〜4回にしてください。');
+  }
+  return loops;
+};
+
+const logAPNGInfo = (label: string, info: APNGInfo) => {
+  console.info(`[APNG検証] ${label}`, {
+    size: `${info.width}x${info.height}`,
+    byteSize: info.byteSize,
+    frameCount: info.frameCount,
+    numPlays: info.loops,
+    fcTLCount: info.fcTLCount,
+    fdATCount: info.fdATCount,
+    totalDuration: info.totalDuration,
+    delay: `${info.delay}/1000`,
+    colorReduced: info.colorReduced,
+    colors: info.colorReduced ? info.colors : 'full',
+  });
+};
 
 export const createAndDownloadZip = async (
   stamps: Stamp[],
@@ -54,10 +84,16 @@ export const createAndDownloadZip = async (
     if (mainStamp) {
         let mainBlob: Blob | null = null;
         if (mainStamp.isAnimated) {
-          // Animated stickers require a static Main image
-          const frameIndex = mainConfig.selectedFrameIndex ?? 0;
-          const frameUrl = mainConfig.customDataUrl || mainStamp.rawFrames?.[frameIndex] || mainStamp.rawFrames?.[0] || mainStamp.dataUrl;
-          mainBlob = await createFinalImageBlob(frameUrl, mainConfig, MAIN_WIDTH, MAIN_HEIGHT);
+          const rawFrames = mainConfig.rawFrames || mainStamp.rawFrames || [];
+          const compiled = await createFinalAnimatedImageBlob(
+            rawFrames,
+            mainConfig,
+            MAIN_WIDTH,
+            MAIN_HEIGHT,
+            mainConfig.playbackDuration ?? mainStamp.playbackDuration ?? 2
+          );
+          mainBlob = compiled?.blob ?? null;
+          if (compiled) logAPNGInfo('main.png', compiled.info);
         } else {
           const sourceUrl = mainConfig.customDataUrl || mainStamp.dataUrl;
           mainBlob = await createFinalImageBlob(sourceUrl, mainConfig, MAIN_WIDTH, MAIN_HEIGHT);
@@ -85,7 +121,8 @@ export const createAndDownloadZip = async (
 
   // 4. Add Meta.txt
   const dateStr = new Date().toISOString().split('T')[0];
-  const txtContent = `AppName: スタンプ切り出しくん
+  const appName = stamps.some(s => s.isAnimated) ? 'うごくスタンプ切り出しくん' : 'スタンプ切り出しくん';
+  const txtContent = `AppName: ${appName}
 CreatedAt: ${dateStr} (JST)
 
 [Japanese]
@@ -290,6 +327,107 @@ export async function createFinalImageBlob(
     };
     img.src = imageUrl; 
   });
+}
+
+export async function createFinalAnimatedImageBlob(
+  rawFrames: string[],
+  config: ExportConfig,
+  targetW: number,
+  targetH: number,
+  playbackDuration: number
+): Promise<{ blob: Blob; info: APNGInfo } | null> {
+  if (!rawFrames.length) return null;
+  if (!LINE_ANIMATION_DURATIONS.includes(playbackDuration as typeof LINE_ANIMATION_DURATIONS[number])) {
+    throw new Error('再生時間はLINE規定に合わせて1秒 / 2秒 / 3秒 / 4秒から選択してください。');
+  }
+
+  const layerImages = new Map<string, HTMLImageElement>();
+  const allImageLayers: ImageLayerObject[] = [...(config.imageLayers || [])];
+  if (config.imageLayersFrames) {
+    config.imageLayersFrames.forEach((frameLayers) => {
+      frameLayers?.forEach((layer) => {
+        if (layer && !allImageLayers.some(l => l.id === layer.id)) allImageLayers.push(layer);
+      });
+    });
+  }
+
+  if (allImageLayers.length > 0) {
+    await Promise.all(allImageLayers.map((layer) => new Promise<void>((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        layerImages.set(layer.id, img);
+        resolve();
+      };
+      img.onerror = () => resolve();
+      img.src = layer.dataUrl;
+    })));
+  }
+
+  const buildBlob = async (frameStep: number) => {
+    const frameData: Uint8Array[] = [];
+
+    for (let f = 0; f < rawFrames.length; f += frameStep) {
+      const rawFrameImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = rawFrames[f];
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get context');
+
+      ctx.clearRect(0, 0, targetW, targetH);
+
+      const frameConfig: ExportConfig = {
+        ...config,
+        id: 'main-apng-frame',
+        scale: config.scalesFrames?.[f] ?? config.scale,
+        rotation: config.rotationsFrames?.[f] ?? (config.rotation ?? 0),
+        offsetX: config.offsetsXFrames?.[f] ?? config.offsetX,
+        offsetY: config.offsetsYFrames?.[f] ?? config.offsetY,
+        flipH: config.flipsHFrames?.[f] ?? config.flipH,
+        flipV: config.flipsVFrames?.[f] ?? config.flipV,
+        textObjects: config.textObjectsFrames?.[f] ?? config.textObjects,
+        imageLayers: config.imageLayersFrames?.[f] ?? config.imageLayers,
+        drawingStrokes: config.drawingStrokesFrames?.[f] ?? config.drawingStrokes,
+      };
+
+      renderAllLayers(ctx, rawFrameImg, frameConfig, targetW, targetH, layerImages);
+      frameData.push(new Uint8Array(ctx.getImageData(0, 0, targetW, targetH).data));
+    }
+
+    const delay = (playbackDuration * 1000) / frameData.length;
+    return encodeAutoAPNG({
+      w: targetW,
+      h: targetH,
+      frames: frameData,
+      delays: new Array(frameData.length).fill(delay),
+      loops: getLineLoopCount(playbackDuration),
+      maxBytes: MAX_APNG_BYTES,
+    });
+  };
+
+  const frameSteps = [1, 2, 3, 4, 5, 6, 8];
+  let best: { blob: Blob; info: APNGInfo } | null = null;
+
+  for (const frameStep of frameSteps) {
+    const outputFrameCount = Math.ceil(rawFrames.length / frameStep);
+    if (outputFrameCount < 5) continue;
+    const result = await buildBlob(frameStep);
+    if (!best || result.info.byteSize < best.info.byteSize) {
+      best = { blob: result.blob, info: result.info };
+    }
+    if (!result.over && result.bytes.length <= MAX_APNG_BYTES) {
+      return { blob: result.blob, info: result.info };
+    }
+  }
+
+  if (best) logAPNGInfo('main-over-capacity', best.info);
+  throw new Error('容量超過: 1MB以内にできません。');
 }
 
 // Helper to draw text (Shared logic logic for Canvas rendering)

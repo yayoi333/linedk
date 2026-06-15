@@ -6,7 +6,7 @@ import { Upload, Download, Loader2, Image as ImageIcon, Grid, Languages, Setting
 import { AppStep, Stamp, MetaData, ExportConfig, SourceImage, TARGET_WIDTH, TARGET_HEIGHT, MAIN_WIDTH, MAIN_HEIGHT, TAB_WIDTH, TAB_HEIGHT, TextObject, ImageLayerObject, DrawingStroke } from './types';
 import { processUploadedImage, reprocessStampWithTolerance } from './lib/imageProcessing';
 import { translateMeta } from './lib/gemini';
-import { createAndDownloadZip, createFinalImageBlob, renderAllLayers, loadProjectFromZip } from './lib/zipService';
+import { createAndDownloadZip, createFinalImageBlob, createFinalAnimatedImageBlob, renderAllLayers, loadProjectFromZip } from './lib/zipService';
 import { saveProject, loadProject, deleteProject, restoreSourceImages } from './lib/storage';
 import { StampEditorModal } from './components/StampEditorModal';
 import { ManualCropModal } from './components/ManualCropModal';
@@ -273,7 +273,8 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
                 renderAllLayers(ctx, img, config, width, height, layerCacheRef.current);
             };
             const frameIndex = config.selectedFrameIndex ?? 0;
-            img.src = config.customDataUrl || (s.isAnimated ? (s.rawFrames?.[frameIndex] || s.rawFrames?.[0] || s.dataUrl) : s.dataUrl);
+            const frames = config.rawFrames || s.rawFrames;
+            img.src = config.customDataUrl || (s.isAnimated ? (frames?.[frameIndex] || frames?.[0] || s.dataUrl) : s.dataUrl);
         };
         draw();
     }, [config, s, width, height, previewBg]);
@@ -420,6 +421,11 @@ export default function App() {
   const [videoDuration, setVideoDuration] = useState(2.0);
   const [videoWidth, setVideoWidth] = useState(0);
   const [videoHeight, setVideoHeight] = useState(0);
+  const appTitle = stickerMode === 'animated' || isAnimatedSet ? 'うごくスタンプ切り出しくん' : 'スタンプ切り出しくん';
+
+  useEffect(() => {
+    document.title = appTitle;
+  }, [appTitle]);
 
   const loadAnimatedVideoFile = (file: File) => {
     if (!file.type.startsWith('video/')) {
@@ -1102,7 +1108,7 @@ const compileAnimatedStamp = async (
       }
 
       const dateStr = new Date().toISOString().split('T')[0];
-      const txtContent = `AppName: スタンプ切り出しくん (動くスタンプ)
+      const txtContent = `AppName: うごくスタンプ切り出しくん
 CreatedDate: ${dateStr}
 Description: アニメーションLINEスタンプ (APNG)
 `;
@@ -1778,10 +1784,23 @@ Description: アニメーションLINEスタンプ (APNG)
               offsetY: updatedStamp.offsetY,
               flipH: updatedStamp.flipH,
               flipV: updatedStamp.flipV,
-              customDataUrl: updatedStamp.dataUrl,
+              customDataUrl: updatedStamp.isAnimated ? undefined : updatedStamp.dataUrl,
+              rawFrames: updatedStamp.rawFrames,
+              rawOriginalFrames: updatedStamp.rawOriginalFrames,
+              playbackDuration: updatedStamp.playbackDuration,
+              fps: updatedStamp.fps,
               textObjects: updatedStamp.textObjects,
               imageLayers: updatedStamp.imageLayers,
               drawingStrokes: updatedStamp.drawingStrokes,
+              textObjectsFrames: updatedStamp.textObjectsFrames,
+              imageLayersFrames: updatedStamp.imageLayersFrames,
+              drawingStrokesFrames: updatedStamp.drawingStrokesFrames,
+              scalesFrames: updatedStamp.scalesFrames,
+              rotationsFrames: updatedStamp.rotationsFrames,
+              offsetsXFrames: updatedStamp.offsetsXFrames,
+              offsetsYFrames: updatedStamp.offsetsYFrames,
+              flipsHFrames: updatedStamp.flipsHFrames,
+              flipsVFrames: updatedStamp.flipsVFrames,
               mainImageLayerOrder: updatedStamp.mainImageLayerOrder ?? 100
           });
       } else if (editingSpecialType === 'tab' && tabConfig) {
@@ -1901,9 +1920,23 @@ Description: アニメーションLINEスタンプ (APNG)
       
       let blob: Blob | null = null;
       if (stamp.isAnimated) {
-        const frameIndex = config.selectedFrameIndex ?? 0;
-        const frameUrl = config.customDataUrl || stamp.rawFrames?.[frameIndex] || stamp.rawFrames?.[0] || stamp.dataUrl;
-        blob = await createFinalImageBlob(frameUrl, config, width, height);
+        if (width === MAIN_WIDTH && height === MAIN_HEIGHT) {
+          const compiled = await createFinalAnimatedImageBlob(
+            config.rawFrames || stamp.rawFrames || [],
+            config,
+            width,
+            height,
+            config.playbackDuration ?? stamp.playbackDuration ?? 2
+          );
+          if (compiled) {
+            logAPNGInfo(filename, compiled.info);
+            blob = compiled.blob;
+          }
+        } else {
+          const frameIndex = config.selectedFrameIndex ?? 0;
+          const frameUrl = config.customDataUrl || config.rawFrames?.[frameIndex] || stamp.rawFrames?.[frameIndex] || stamp.rawFrames?.[0] || stamp.dataUrl;
+          blob = await createFinalImageBlob(frameUrl, config, width, height);
+        }
       } else {
         const sourceUrl = config.customDataUrl || stamp.dataUrl;
         blob = await createFinalImageBlob(sourceUrl, config, width, height);
@@ -1922,7 +1955,8 @@ Description: アニメーションLINEスタンプ (APNG)
       if (config.customDataUrl) return config.customDataUrl;
       if (stamp.isAnimated) {
           const frameIndex = config.selectedFrameIndex ?? 0;
-          return stamp.rawFrames?.[frameIndex] || stamp.rawFrames?.[0] || stamp.dataUrl;
+          const frames = config.rawFrames || stamp.rawFrames;
+          return frames?.[frameIndex] || frames?.[0] || stamp.dataUrl;
       }
       return stamp.dataUrl;
   };
@@ -1932,6 +1966,41 @@ Description: アニメーションLINEスタンプ (APNG)
       const config = editingSpecialType === 'main' ? mainConfig : tabConfig;
       if (!config) return editingStamp;
       const sourceSize = getSpecialSourceSize(editingStamp);
+      if (editingSpecialType === 'main' && editingStamp.isAnimated) {
+          const rawFrames = config.rawFrames || editingStamp.rawFrames || [];
+          return {
+              ...editingStamp,
+              dataUrl: rawFrames[0] || editingStamp.dataUrl,
+              originalDataUrl: config.rawOriginalFrames?.[0] || editingStamp.rawOriginalFrames?.[0] || editingStamp.originalDataUrl,
+              isAnimated: true,
+              rawFrames,
+              rawOriginalFrames: config.rawOriginalFrames || editingStamp.rawOriginalFrames,
+              width: sourceSize.w,
+              height: sourceSize.h,
+              scale: config.scale,
+              rotation: config.rotation ?? 0,
+              offsetX: config.offsetX,
+              offsetY: config.offsetY,
+              flipH: config.flipH,
+              flipV: config.flipV,
+              textObjects: config.textObjects ?? [],
+              imageLayers: config.imageLayers ?? [],
+              drawingStrokes: config.drawingStrokes ?? [],
+              textObjectsFrames: config.textObjectsFrames || editingStamp.textObjectsFrames,
+              imageLayersFrames: config.imageLayersFrames || editingStamp.imageLayersFrames,
+              drawingStrokesFrames: config.drawingStrokesFrames || editingStamp.drawingStrokesFrames,
+              scalesFrames: config.scalesFrames || editingStamp.scalesFrames,
+              rotationsFrames: config.rotationsFrames || editingStamp.rotationsFrames,
+              offsetsXFrames: config.offsetsXFrames || editingStamp.offsetsXFrames,
+              offsetsYFrames: config.offsetsYFrames || editingStamp.offsetsYFrames,
+              flipsHFrames: config.flipsHFrames || editingStamp.flipsHFrames,
+              flipsVFrames: config.flipsVFrames || editingStamp.flipsVFrames,
+              playbackDuration: config.playbackDuration || editingStamp.playbackDuration,
+              fps: config.fps || editingStamp.fps,
+              mainImageLayerOrder: config.mainImageLayerOrder ?? 100
+          } satisfies Stamp;
+      }
+
       return {
           ...editingStamp,
           dataUrl: getSpecialSourceUrl(editingStamp, config),
@@ -2170,6 +2239,19 @@ Description: アニメーションLINEスタンプ (APNG)
       }, 100);
   };
 
+  const getTabEditingFrames = () => {
+      if (editingSpecialType !== 'tab' || !tabConfig) return undefined;
+      return stamps.find(s => s.id === tabConfig.id)?.rawFrames;
+  };
+
+  const handleTabEditorFrameSelect = (frameIndex: number) => {
+      setTabConfig(prev => prev ? {
+          ...prev,
+          selectedFrameIndex: frameIndex,
+          customDataUrl: undefined
+      } : prev);
+  };
+
   // --- Drag and Drop Handlers ---
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>, position: number) => {
     dragItem.current = position;
@@ -2249,7 +2331,7 @@ Description: アニメーションLINEスタンプ (APNG)
             <div className="flex flex-col gap-3">
                 <div className="flex items-center gap-2">
                     <div className="bg-primary-500 p-2 rounded-lg text-white"><Grid size={24} /></div>
-                    <h1 className="text-xl font-bold text-gray-800">スタンプ切り出しくん</h1>
+                    <h1 className="text-xl font-bold text-gray-800">{appTitle}</h1>
                     <button
                         onClick={() => setShowApiKeyModal(true)}
                         className={`ml-auto flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full border transition ${
@@ -2875,6 +2957,21 @@ Description: アニメーションLINEスタンプ (APNG)
                             className="w-full accent-primary-600"
                           />
                         </div>
+
+                        <div className="space-y-1 col-span-2">
+                          <span className="font-bold text-gray-500 block">まとめる強さ ({animGapTolerance})</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="50"
+                            value={animGapTolerance}
+                            onChange={(e) => setAnimGapTolerance(parseInt(e.target.value))}
+                            className="w-full accent-primary-600"
+                          />
+                          <span className="text-[10px] text-gray-400 block">
+                            スタンプ同士がくっつきすぎる/離れすぎるときに調整します。
+                          </span>
+                        </div>
                       </div>
 
                       <label className="flex items-center gap-2 cursor-pointer bg-primary-50/50 p-2.5 rounded-xl border border-primary-100">
@@ -3055,15 +3152,26 @@ Description: アニメーションLINEスタンプ (APNG)
                               const selectedTabStamp = tabConfig ? stamps.find(s => s.id === tabConfig.id) : null;
                               if (!selectedTabStamp?.isAnimated || !selectedTabStamp.rawFrames?.length) return null;
                               return (
-                                <select
-                                  className="w-full border-gray-300 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 mb-2 bg-white text-sm"
-                                  value={tabConfig?.selectedFrameIndex ?? 0}
-                                  onChange={(e) => handleTabFrameSelect(Number(e.target.value))}
-                                >
-                                  {selectedTabStamp.rawFrames.map((_, idx) => (
-                                    <option key={idx} value={idx}>タブに使うコマ: {idx + 1}</option>
-                                  ))}
-                                </select>
+                                <div className="mb-2">
+                                  <div className="text-[11px] font-bold text-gray-500 mb-1">タブに使うコマを選択</div>
+                                  <div className="grid grid-cols-5 gap-1.5">
+                                    {selectedTabStamp.rawFrames.map((frameUrl, idx) => {
+                                      const selected = (tabConfig?.selectedFrameIndex ?? 0) === idx;
+                                      return (
+                                        <button
+                                          key={idx}
+                                          type="button"
+                                          onClick={() => handleTabFrameSelect(idx)}
+                                          className={`relative aspect-square rounded-md border overflow-hidden bg-white transition ${selected ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200 hover:border-primary-300'}`}
+                                          title={`コマ ${idx + 1}`}
+                                        >
+                                          <img src={frameUrl} alt={`コマ ${idx + 1}`} className="w-full h-full object-contain" />
+                                          <span className={`absolute right-0.5 bottom-0.5 rounded px-1 text-[9px] font-bold ${selected ? 'bg-primary-600 text-white' : 'bg-white/90 text-gray-500'}`}>{idx + 1}</span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
                               );
                             })()}
                             <CanvasPreview config={tabConfig} width={TAB_WIDTH} height={TAB_HEIGHT} previewBg={previewBg} stamps={stamps} onClick={() => { setEditingSpecialType('tab'); const s = stamps.find(x => x.id === tabConfig?.id); if(s) setEditingStamp(s); }} />
@@ -3092,7 +3200,7 @@ Description: アニメーションLINEスタンプ (APNG)
       </main>
       
       {editingStamp && (
-        <StampEditorModal stamp={getSpecialEditingStamp() || editingStamp} isOpen={!!editingStamp} onClose={() => { setEditingStamp(null); setEditingSpecialType(null); }} onSave={async (updated) => { setEditingStamp(null); let finalStamp = updated; if (updated.isAnimated) { setIsProcessing(true); try { finalStamp = await recompileAnimatedStamp(updated); } catch (e: any) { console.error(e); alert(e?.message || '1MB以内にできません。'); setIsProcessing(false); return; } finally { setIsProcessing(false); } } if (editingSpecialType) { updateSpecialConfig(finalStamp); } else { updateStamp(finalStamp); } }} onReCrop={() => handleReCropFromEditor(editingStamp)} initialPreviewBg={previewBg} targetWidth={editingSpecialType === 'main' ? MAIN_WIDTH : (editingSpecialType === 'tab' ? TAB_WIDTH : TARGET_WIDTH)} targetHeight={editingSpecialType === 'main' ? MAIN_HEIGHT : (editingSpecialType === 'tab' ? TAB_HEIGHT : TARGET_HEIGHT)} initialScale={editingSpecialType === 'main' ? mainConfig?.scale : editingSpecialType === 'tab' ? tabConfig?.scale : undefined} initialRotation={editingSpecialType === 'main' ? mainConfig?.rotation : editingSpecialType === 'tab' ? tabConfig?.rotation : undefined} initialOffset={editingSpecialType === 'main' ? {x: mainConfig?.offsetX || 0, y: mainConfig?.offsetY || 0} : editingSpecialType === 'tab' ? {x: tabConfig?.offsetX || 0, y: tabConfig?.offsetY || 0} : undefined} initialTextObjects={editingSpecialType === 'main' ? mainConfig?.textObjects : editingSpecialType === 'tab' ? tabConfig?.textObjects : undefined} initialImageLayers={editingSpecialType === 'main' ? mainConfig?.imageLayers : editingSpecialType === 'tab' ? tabConfig?.imageLayers : undefined} initialDrawingStrokes={editingSpecialType === 'main' ? mainConfig?.drawingStrokes : editingSpecialType === 'tab' ? tabConfig?.drawingStrokes : undefined} />
+        <StampEditorModal stamp={getSpecialEditingStamp() || editingStamp} isOpen={!!editingStamp} onClose={() => { setEditingStamp(null); setEditingSpecialType(null); }} onSave={async (updated) => { setEditingStamp(null); let finalStamp = updated; if (updated.isAnimated && !editingSpecialType) { setIsProcessing(true); try { finalStamp = await recompileAnimatedStamp(updated); } catch (e: any) { console.error(e); alert(e?.message || '1MB以内にできません。'); setIsProcessing(false); return; } finally { setIsProcessing(false); } } if (editingSpecialType) { updateSpecialConfig(finalStamp); } else { updateStamp(finalStamp); } }} onReCrop={() => handleReCropFromEditor(editingStamp)} initialPreviewBg={previewBg} targetWidth={editingSpecialType === 'main' ? MAIN_WIDTH : (editingSpecialType === 'tab' ? TAB_WIDTH : TARGET_WIDTH)} targetHeight={editingSpecialType === 'main' ? MAIN_HEIGHT : (editingSpecialType === 'tab' ? TAB_HEIGHT : TARGET_HEIGHT)} initialScale={editingSpecialType === 'main' ? mainConfig?.scale : editingSpecialType === 'tab' ? tabConfig?.scale : undefined} initialRotation={editingSpecialType === 'main' ? mainConfig?.rotation : editingSpecialType === 'tab' ? tabConfig?.rotation : undefined} initialOffset={editingSpecialType === 'main' ? {x: mainConfig?.offsetX || 0, y: mainConfig?.offsetY || 0} : editingSpecialType === 'tab' ? {x: tabConfig?.offsetX || 0, y: tabConfig?.offsetY || 0} : undefined} initialTextObjects={editingSpecialType === 'main' ? mainConfig?.textObjects : editingSpecialType === 'tab' ? tabConfig?.textObjects : undefined} initialImageLayers={editingSpecialType === 'main' ? mainConfig?.imageLayers : editingSpecialType === 'tab' ? tabConfig?.imageLayers : undefined} initialDrawingStrokes={editingSpecialType === 'main' ? mainConfig?.drawingStrokes : editingSpecialType === 'tab' ? tabConfig?.drawingStrokes : undefined} staticFrameSourceFrames={getTabEditingFrames()} staticFrameIndex={tabConfig?.selectedFrameIndex ?? 0} onStaticFrameSelect={handleTabEditorFrameSelect} />
       )}
 
       {showSourceSelectModal && (

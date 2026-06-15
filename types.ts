@@ -138,6 +138,7 @@ export interface ExportConfig {
   sourceHeight?: number;
   customDataUrl?: string; // If edited specifically for Main/Tab (eraser etc)
   selectedFrameIndex?: number; // Static frame used when deriving Main/Tab from animated stamps
+  rawFrames?: string[]; // Edited animated frames for Main image APNG
   textObjects?: TextObject[]; // Added text objects for Main/Tab
   
   // Future features
@@ -150,6 +151,8 @@ export interface ExportConfig {
 
   // Frame-by-frame decorations for animation exports
   rawOriginalFrames?: string[];
+  playbackDuration?: number;
+  fps?: number;
   textObjectsFrames?: TextObject[][];
   imageLayersFrames?: ImageLayerObject[][];
   drawingStrokesFrames?: DrawingStroke[][];

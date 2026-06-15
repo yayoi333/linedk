@@ -43,6 +43,9 @@ interface Props {
   initialTextObjects?: TextObject[];
   initialImageLayers?: ImageLayerObject[];
   initialDrawingStrokes?: DrawingStroke[];
+  staticFrameSourceFrames?: string[];
+  staticFrameIndex?: number;
+  onStaticFrameSelect?: (frameIndex: number) => void;
 }
 
 interface HistoryState {
@@ -86,7 +89,10 @@ export const StampEditorModal: React.FC<Props> = ({
   initialOffset,
   initialTextObjects,
   initialImageLayers,
-  initialDrawingStrokes
+  initialDrawingStrokes,
+  staticFrameSourceFrames,
+  staticFrameIndex = 0,
+  onStaticFrameSelect
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
@@ -102,6 +108,7 @@ export const StampEditorModal: React.FC<Props> = ({
   const [frames, setFramesState] = useState<string[]>([]);
   const [originalFrames, setOriginalFrames] = useState<string[]>([]);
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const [staticSelectedFrameIndex, setStaticSelectedFrameIndex] = useState(staticFrameIndex);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackDuration, setPlaybackDuration] = useState(() => {
     const frameCount = stamp.rawFrames?.length || 1;
@@ -420,6 +427,11 @@ export const StampEditorModal: React.FC<Props> = ({
       setSelectedTextId(null);
       setSelectedImageLayerId(null);
       setSelectedDrawingStrokeId(null);
+      const initialStaticFrameIndex = Math.min(
+        Math.max(0, staticFrameIndex),
+        Math.max(0, (staticFrameSourceFrames?.length || 1) - 1)
+      );
+      setStaticSelectedFrameIndex(initialStaticFrameIndex);
 
       let fTexts: TextObject[][] = [];
       let fImages: ImageLayerObject[][] = [];
@@ -471,7 +483,7 @@ export const StampEditorModal: React.FC<Props> = ({
         setFramesOffsetsY([]);
         setFramesFlipsH([]);
         setFramesFlipsV([]);
-        setWorkingDataUrlState(stamp.dataUrl);
+        setWorkingDataUrlState(staticFrameSourceFrames?.[initialStaticFrameIndex] || stamp.dataUrl);
         setTextObjectsState(initialTextObjects ?? stamp.textObjects ?? []);
         setImageLayersState(initialImageLayers ?? stamp.imageLayers ?? []);
         setDrawingStrokesState(initialDrawingStrokes ?? stamp.drawingStrokes ?? []);
@@ -483,7 +495,7 @@ export const StampEditorModal: React.FC<Props> = ({
           flipH: stamp.flipH ?? false,
           flipV: stamp.flipV ?? false,
           offset: initialOffset ?? { x: stamp.offsetX, y: stamp.offsetY },
-          dataUrl: stamp.isAnimated && stamp.rawFrames ? stamp.rawFrames[0] : stamp.dataUrl,
+          dataUrl: stamp.isAnimated && stamp.rawFrames ? stamp.rawFrames[0] : (staticFrameSourceFrames?.[initialStaticFrameIndex] || stamp.dataUrl),
           tolerance: stamp.currentTolerance || 50,
           textObjects: stamp.isAnimated && fTexts.length > 0 ? (fTexts[0] || []) : (initialTextObjects ?? stamp.textObjects ?? []),
           imageLayers: stamp.isAnimated && fImages.length > 0 ? (fImages[0] || []) : (initialImageLayers ?? stamp.imageLayers ?? []),
@@ -508,7 +520,7 @@ export const StampEditorModal: React.FC<Props> = ({
 
       const firstOrigUrl = stamp.isAnimated && stamp.rawFrames 
         ? (initOriginalFrames[0] || stamp.originalDataUrl || initFrames[0])
-        : stamp.originalDataUrl;
+        : (staticFrameSourceFrames?.[initialStaticFrameIndex] || stamp.originalDataUrl);
 
       if (firstOrigUrl) {
           const img = new Image();
@@ -521,7 +533,7 @@ export const StampEditorModal: React.FC<Props> = ({
       // Load Materials
       loadMaterials().then(setMaterials).catch(console.error);
     }
-  }, [isOpen, stamp, initialScale, initialRotation, initialOffset, initialTextObjects, initialImageLayers, initialDrawingStrokes]);
+  }, [isOpen, stamp, initialScale, initialRotation, initialOffset, initialTextObjects, initialImageLayers, initialDrawingStrokes, staticFrameSourceFrames, staticFrameIndex]);
 
   // Handle switching frames (update the displayed canvas and editor objects to match target frame state)
   useEffect(() => {
@@ -556,6 +568,18 @@ export const StampEditorModal: React.FC<Props> = ({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFrameIndex, isOpen, stamp.isAnimated]);
+
+  const handleStaticSourceFrameSelect = (frameIndex: number) => {
+    if (!staticFrameSourceFrames?.[frameIndex]) return;
+    const frameUrl = staticFrameSourceFrames[frameIndex];
+    setStaticSelectedFrameIndex(frameIndex);
+    onStaticFrameSelect?.(frameIndex);
+    setWorkingDataUrlState(frameUrl);
+    const img = new Image();
+    img.src = frameUrl;
+    img.onload = () => setOriginalImage(img);
+    addToHistory({ dataUrl: frameUrl });
+  };
 
   // Autoplay function for animated frames
   useEffect(() => {
@@ -1957,6 +1981,39 @@ export const StampEditorModal: React.FC<Props> = ({
                                 </div>
                             );
                         })}
+                    </div>
+                </div>
+            )}
+            {!stamp.isAnimated && staticFrameSourceFrames && staticFrameSourceFrames.length > 0 && (
+                <div className="bg-gray-50 border-t border-b p-2 shrink-0 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between px-2">
+                        <span className="text-xs font-bold text-gray-700">タブ画像に使うコマ</span>
+                        <span className="text-[11px] text-gray-500 font-bold">
+                            選択中: {staticSelectedFrameIndex + 1} / {staticFrameSourceFrames.length}
+                        </span>
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto py-1 px-1 scrollbar-thin scrollbar-thumb-gray-300">
+                        {staticFrameSourceFrames.map((frame, idx) => (
+                            <button
+                                key={idx}
+                                type="button"
+                                onClick={() => handleStaticSourceFrameSelect(idx)}
+                                className={`relative flex-shrink-0 cursor-pointer rounded-lg border-2 overflow-hidden transition bg-white ${
+                                    staticSelectedFrameIndex === idx ? 'border-primary-600 ring-2 ring-primary-100' : 'border-gray-200 hover:border-gray-400'
+                                }`}
+                                style={{ width: '64px', height: '56px' }}
+                                title={`コマ ${idx + 1}`}
+                            >
+                                <div className="w-full h-full p-0.5 relative">
+                                    <div className="w-full h-full rounded overflow-hidden" style={{ backgroundImage: `url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAAB5JREFUKFNjYCACAAAHOgD///+F8f///4X/09JvAgBwYw/57yQ+jAAAAABJRU5ErkJggg==')`, backgroundSize: 'auto' }}>
+                                        <img src={frame} alt={`Frame ${idx + 1}`} className="w-full h-full object-contain pointer-events-none" />
+                                    </div>
+                                </div>
+                                <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[9px] px-1 rounded font-mono font-bold">
+                                    {idx + 1}
+                                </span>
+                            </button>
+                        ))}
                     </div>
                 </div>
             )}
