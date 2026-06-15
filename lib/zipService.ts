@@ -33,16 +33,23 @@ const logAPNGInfo = (label: string, info: APNGInfo) => {
   });
 };
 
-export const createAndDownloadZip = async (
+const downloadZipBlob = (blob: Blob, filePrefix: string, dateStr: string) => {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  const timeStr = new Date().toTimeString().split(' ')[0].replace(/:/g, '');
+  link.download = `${filePrefix}_${dateStr}_${timeStr}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
+const addExportImagesToZip = async (
+  zip: JSZip,
   stamps: Stamp[],
   mainConfig: ExportConfig | null,
   tabConfig: ExportConfig | null,
-  metaData: MetaData,
   renumber: boolean
 ) => {
-  const zip = new JSZip();
-  
-  // 1. Add Stamps
   let counter = 1;
   for (const stamp of stamps) {
     if (stamp.isExcluded) continue;
@@ -78,7 +85,6 @@ export const createAndDownloadZip = async (
     counter++;
   }
 
-  // 2. Add Main
   if (mainConfig) {
     const mainStamp = stamps.find(s => s.id === mainConfig.id);
     if (mainStamp) {
@@ -102,7 +108,6 @@ export const createAndDownloadZip = async (
     }
   }
 
-  // 3. Add Tab
   if (tabConfig) {
     const tabStamp = stamps.find(s => s.id === tabConfig.id);
     if (tabStamp) {
@@ -118,8 +123,18 @@ export const createAndDownloadZip = async (
         if (tabBlob) zip.file("tab.png", tabBlob);
     }
   }
+};
 
-  // 4. Add Meta.txt
+export const createAndDownloadZip = async (
+  stamps: Stamp[],
+  mainConfig: ExportConfig | null,
+  tabConfig: ExportConfig | null,
+  metaData: MetaData,
+  renumber: boolean
+) => {
+  const zip = new JSZip();
+  await addExportImagesToZip(zip, stamps, mainConfig, tabConfig, renumber);
+
   const dateStr = new Date().toISOString().split('T')[0];
   const appName = stamps.some(s => s.isAnimated) ? 'うごくスタンプ切り出しくん' : 'スタンプ切り出しくん';
   const txtContent = `AppName: ${appName}
@@ -135,7 +150,6 @@ Description: ${metaData.stampDescEn}
 `;
   zip.file("meta.txt", txtContent);
 
-  // 5. Add _project.json (full project state for restore)
   const projectData = {
     version: 1,
     stamps: stamps.map(s => ({
@@ -149,17 +163,22 @@ Description: ${metaData.stampDescEn}
   };
   zip.file("_project.json", JSON.stringify(projectData));
 
-  // Generate and download
   const content = await zip.generateAsync({ type: "blob" });
-  
-  // Simple download trigger
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(content);
-  const timeStr = new Date().toTimeString().split(' ')[0].replace(/:/g, '');
-  link.download = `AniSticker_${dateStr}_${timeStr}.zip`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  downloadZipBlob(content, 'AniSticker_Work', dateStr);
+};
+
+export const createSubmissionZip = async (
+  stamps: Stamp[],
+  mainConfig: ExportConfig | null,
+  tabConfig: ExportConfig | null,
+  renumber: boolean
+) => {
+  const zip = new JSZip();
+  await addExportImagesToZip(zip, stamps, mainConfig, tabConfig, renumber);
+
+  const content = await zip.generateAsync({ type: "blob" });
+  const dateStr = new Date().toISOString().split('T')[0];
+  downloadZipBlob(content, 'AniSticker_Submission', dateStr);
 };
 
 // Helper for drawing an image layer

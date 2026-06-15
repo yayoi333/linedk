@@ -6,7 +6,7 @@ import { Upload, Download, Loader2, Image as ImageIcon, Grid, Languages, Setting
 import { AppStep, Stamp, MetaData, ExportConfig, SourceImage, TARGET_WIDTH, TARGET_HEIGHT, MAIN_WIDTH, MAIN_HEIGHT, TAB_WIDTH, TAB_HEIGHT, TextObject, ImageLayerObject, DrawingStroke } from './types';
 import { processUploadedImage, reprocessStampWithTolerance } from './lib/imageProcessing';
 import { translateMeta } from './lib/gemini';
-import { createAndDownloadZip, createFinalImageBlob, createFinalAnimatedImageBlob, renderAllLayers, loadProjectFromZip } from './lib/zipService';
+import { createAndDownloadZip, createSubmissionZip, createFinalImageBlob, createFinalAnimatedImageBlob, renderAllLayers, loadProjectFromZip } from './lib/zipService';
 import { saveProject, loadProject, deleteProject, restoreSourceImages } from './lib/storage';
 import { StampEditorModal } from './components/StampEditorModal';
 import { ManualCropModal } from './components/ManualCropModal';
@@ -1281,6 +1281,7 @@ Description: アニメーションLINEスタンプ (APNG)
   const dragOverItem = useRef<number | null>(null);
 
   const stampsRef = useRef(stamps);
+  const bulkProcessSeqRef = useRef(0);
   useEffect(() => { stampsRef.current = stamps; }, [stamps]);
 
   // --- Load API Key on Mount ---
@@ -1565,23 +1566,25 @@ Description: アニメーションLINEスタンプ (APNG)
   // Debounced Bulk Processing Effect
   useEffect(() => {
       if (skipAutoProcessRef.current) return;
+      const processSeq = ++bulkProcessSeqRef.current;
+      const tolerance = globalTolerance;
       const timer = setTimeout(async () => {
           if (skipAutoProcessRef.current) return;
           const currentStamps = stampsRef.current;
           if (currentStamps.length === 0) return;
-          const needsUpdate = currentStamps.some(s => s.originalDataUrl && s.currentTolerance !== globalTolerance);
+          const needsUpdate = currentStamps.some(s => (s.originalDataUrl || s.rawOriginalFrames?.length) && s.currentTolerance !== tolerance);
           if (!needsUpdate) return;
           setIsRegenerating(true);
           try {
               const updates = new Map<string, Stamp>();
               await Promise.all(currentStamps.map(async (stamp) => {
-                  if (stamp.currentTolerance === globalTolerance) return;
+                  if (stamp.currentTolerance === tolerance) return;
                   if (stamp.isAnimated && stamp.rawOriginalFrames?.length) {
                       const optimized = await buildOptimizedAnimatedCutout(
                           stamp.rawOriginalFrames,
                           stamp.playbackDuration ?? 2,
                           animBgColor,
-                          globalTolerance,
+                          tolerance,
                           animRemovalAlg
                       );
                       const apngUrl = await new Promise<string>((resolve) => {
@@ -1592,29 +1595,30 @@ Description: アニメーションLINEスタンプ (APNG)
                       updates.set(stamp.id, {
                           ...stamp,
                           dataUrl: apngUrl,
-                          originalDataUrl: optimized.rawDataUrls[0] || stamp.originalDataUrl,
+                          originalDataUrl: stamp.originalDataUrl || stamp.rawOriginalFrames?.[0] || optimized.rawDataUrls[0],
                           rawFrames: optimized.dataUrls,
-                          rawOriginalFrames: optimized.rawDataUrls,
+                          rawOriginalFrames: stamp.rawOriginalFrames,
                           fps: optimized.fps,
                           apngInfo: optimized.info,
-                          currentTolerance: globalTolerance
+                          currentTolerance: tolerance
                       });
                   } else if (stamp.originalDataUrl) {
-                      const newDataUrl = await reprocessStampWithTolerance(stamp.originalDataUrl, globalTolerance);
+                      const newDataUrl = await reprocessStampWithTolerance(stamp.originalDataUrl, tolerance);
                       updates.set(stamp.id, {
                           ...stamp,
                           dataUrl: newDataUrl,
-                          currentTolerance: globalTolerance
+                          currentTolerance: tolerance
                       });
                   }
               }));
+              if (bulkProcessSeqRef.current !== processSeq || skipAutoProcessRef.current) return;
               if (updates.size > 0) {
                   setStamps(prev => prev.map(s => updates.get(s.id) || s));
               }
           } catch (err) {
               console.error("Bulk processing failed", err);
           } finally {
-              setIsRegenerating(false);
+              if (bulkProcessSeqRef.current === processSeq) setIsRegenerating(false);
           }
       }, 100); 
       return () => clearTimeout(timer);
@@ -2008,6 +2012,17 @@ Description: アニメーションLINEスタンプ (APNG)
     await createAndDownloadZip(stamps, mainConfig, tabConfig, meta, renumber);
     await saveProject(stamps, sourceImages, mainConfig, tabConfig, meta, globalTolerance, gapTolerance, previewBg);
     setLastSavedAt(new Date().toISOString());
+    showToast('作業ZIPを保存しました');
+  };
+
+  const handleSubmissionExport = async () => {
+    if (!mainConfig || !tabConfig) return alert('メイン画像とタブ画像を選択してください');
+    if (!isExactCount) {
+      alert(`申請用ZIPは ${allowedCounts.join(' / ')} 個ぴったりにしてください。\n現在は ${validStampsCount} 個です。\n作業途中の保存は「作業ZIP」で保存できます。`);
+      return;
+    }
+    await createSubmissionZip(stamps, mainConfig, tabConfig, renumber);
+    showToast('申請用ZIPを保存しました');
   };
 
   const downloadSingleStamp = async (stamp: Stamp) => {
@@ -2569,6 +2584,7 @@ Description: アニメーションLINEスタンプ (APNG)
                                 </button>
                                 <span className="text-xs text-gray-500 font-mono w-6 text-right shrink-0">{globalTolerance}</span>
                             </div>
+                            {isRegenerating && <Loader2 size={14} className="animate-spin text-primary-500" />}
                         </div>
                         <div className="flex items-center gap-2">
                             <div className="flex items-center gap-1 text-xs font-bold text-gray-500">
@@ -3306,7 +3322,14 @@ Description: アニメーションLINEスタンプ (APNG)
                 <div className="bg-primary-50 p-6 rounded-2xl shadow-inner border border-primary-100 space-y-4">
                     <h3 className="font-bold text-primary-800 flex items-center gap-2 mb-4"><Download className="text-primary-600" size={20} />書き出し</h3>
                     <div className="flex items-center gap-2 mb-4"><input type="checkbox" id="renumber" checked={renumber} onChange={e => setRenumber(e.target.checked)} className="rounded text-primary-600" /><label htmlFor="renumber" className="text-sm text-gray-700">番号を振り直す (01.png〜)</label></div>
-                    <button onClick={handleExport} className="w-full bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Download size={20} />ZIPをダウンロード</button>
+                    <div className="space-y-2">
+                      <button onClick={handleExport} className="w-full bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Download size={20} />作業ZIPをダウンロード</button>
+                      <p className="text-[11px] text-primary-700/70 leading-relaxed">復元データ入り。作業途中や個数の過不足がある状態でも保存できます。</p>
+                    </div>
+                    <div className="space-y-2">
+                      <button onClick={handleSubmissionExport} className="w-full bg-white hover:bg-primary-50 text-primary-700 border border-primary-300 font-bold py-3 rounded-xl shadow-sm transition flex items-center justify-center gap-2"><Download size={20} />申請用ZIPをダウンロード</button>
+                      <p className="text-[11px] text-gray-500 leading-relaxed">申請に必要なスタンプ、メイン画像、タブ画像のみ。復元用JSONは入りません。</p>
+                    </div>
                     <div className="pt-4 border-t border-primary-200/50 space-y-3"><a href="https://creator.line.me/ja/stickermaker/" target="_blank" rel="noopener noreferrer" className="w-full bg-white text-[#06C755] border border-[#06C755] font-bold py-3 rounded-xl flex items-center justify-center gap-2 md:hidden"><Smartphone size={18} />LINEスタンプメーカー</a><a href="https://creator.line.me/ja/" target="_blank" rel="noopener noreferrer" className="w-full bg-white text-gray-600 border border-gray-300 font-bold py-3 rounded-xl flex items-center justify-center gap-2"><ExternalLink size={18} />クリエイターズマーケット</a></div>
                 </div>
             </div>
