@@ -166,6 +166,25 @@ const getLineLoopCount = (playbackDuration: number) => {
   return loops;
 };
 
+const getAutoFps = (frameCount: number, playbackDuration: number) => (
+  Math.round((frameCount / playbackDuration) * 10) / 10
+);
+
+const logAPNGInfo = (label: string, info: APNGInfo) => {
+  console.info(`[APNG検証] ${label}`, {
+    size: `${info.width}x${info.height}`,
+    byteSize: info.byteSize,
+    frameCount: info.frameCount,
+    numPlays: info.loops,
+    fcTLCount: info.fcTLCount,
+    fdATCount: info.fdATCount,
+    totalDuration: info.totalDuration,
+    delay: `${info.delay}/1000`,
+    colorReduced: info.colorReduced,
+    colors: info.colorReduced ? info.colors : 'full',
+  });
+};
+
 async function sha256(message: string) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -385,7 +404,6 @@ export default function App() {
   const [animCols, setAnimCols] = useState(4);
   const [animCropMethod, setAnimCropMethod] = useState<'auto' | 'grid'>('auto');
   const [animFrameCount, setAnimFrameCount] = useState(20);
-  const [animFps, setAnimFps] = useState(10);
   const [animDuration, setAnimDuration] = useState<number>(2);
   const [animExtractDuration, setAnimExtractDuration] = useState<number>(2);
   const [animBgColor, setAnimBgColor] = useState('auto'); // 'auto' or hex code e.g. '#ffffff'
@@ -441,11 +459,9 @@ export default function App() {
     e.target.value = '';
     if (!ok) return;
     setShowSourceSelectModal(false);
-    setTimeout(() => {
-      setTargetReplaceId(null);
-      setManualCropInitialSourceId('animated-video');
-      setIsManualCropping(true);
-    }, 100);
+    setStickerMode('animated');
+    setStep(AppStep.UPLOAD);
+    showToast('動画を追加しました。設定を確認して切り出してください。');
   };
 
   const [livePreviewUrl, setLivePreviewUrl] = useState<string>('');
@@ -702,7 +718,6 @@ const compileAnimatedStamp = async (
 
   const buildOptimizedAnimatedCutout = async (
     originalFrames: string[],
-    fps: number,
     playbackDuration: number,
     bgColor: string,
     tolerance: number,
@@ -720,27 +735,34 @@ const compileAnimatedStamp = async (
           i.src = originalFrames[f];
         });
 
+        const sourceCanvas = document.createElement('canvas');
+        sourceCanvas.width = img.width;
+        sourceCanvas.height = img.height;
+        const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+        if (!sourceCtx) continue;
+
+        sourceCtx.drawImage(img, 0, 0);
+        const sourceImageData = sourceCtx.getImageData(0, 0, img.width, img.height);
+        const processedImgData = removeBackgroundForAnimFrame(
+          sourceImageData,
+          bgColor,
+          tolerance,
+          algorithm
+        );
+        sourceCtx.putImageData(processedImgData, 0, 0);
+
         const canvas = document.createElement('canvas');
         canvas.width = LINE_APNG_WIDTH;
         canvas.height = LINE_APNG_HEIGHT;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) continue;
-
         ctx.clearRect(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
         const fitScale = Math.min(LINE_APNG_WIDTH / img.width, LINE_APNG_HEIGHT / img.height);
         const drawW = Math.max(1, Math.round(img.width * fitScale));
         const drawH = Math.max(1, Math.round(img.height * fitScale));
         const drawX = Math.round((LINE_APNG_WIDTH - drawW) / 2);
         const drawY = Math.round((LINE_APNG_HEIGHT - drawH) / 2);
-        ctx.drawImage(img, drawX, drawY, drawW, drawH);
-        const imageData = ctx.getImageData(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
-        const processedImgData = removeBackgroundForAnimFrame(
-          imageData,
-          bgColor,
-          tolerance,
-          algorithm
-        );
-        ctx.putImageData(processedImgData, 0, 0);
+        ctx.drawImage(sourceCanvas, drawX, drawY, drawW, drawH);
 
         const finalImageData = ctx.getImageData(0, 0, LINE_APNG_WIDTH, LINE_APNG_HEIGHT);
         frameData.push(new Uint8Array(finalImageData.data));
@@ -823,6 +845,7 @@ const compileAnimatedStamp = async (
         flipsHFrames: stamp.flipsHFrames,
         flipsVFrames: stamp.flipsVFrames
       });
+      logAPNGInfo(stamp.id, compiled.info);
 
       const reader = new FileReader();
       const dataUrl = await new Promise<string>((resolve) => {
@@ -874,7 +897,7 @@ const compileAnimatedStamp = async (
       let cropBoxes: { x: number; y: number; w: number; h: number }[] = [];
 
       if (animCropMethod === 'auto') {
-        setAnimProgressText('キャラクター自動検出中...');
+        setAnimProgressText('切り出し枠を検出中...');
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = W;
         tempCanvas.height = H;
@@ -997,7 +1020,6 @@ const compileAnimatedStamp = async (
 
         const optimized = await buildOptimizedAnimatedCutout(
           stampRawOriginalFrames[bIdx],
-          animFps,
           animDuration,
           animBgColor,
           animTolerance,
@@ -1005,6 +1027,7 @@ const compileAnimatedStamp = async (
         );
         const apngBlob = optimized.blob;
         const finalFramesDataUrls = optimized.dataUrls;
+        logAPNGInfo(`No.${String(bIdx + 1).padStart(2, '0')}`, optimized.info);
 
         const reader = new FileReader();
         const apngUrl = await new Promise<string>((resolve) => {
@@ -2003,7 +2026,6 @@ Description: アニメーションLINEスタンプ (APNG)
       if (stampFramesBuffers.length > 0) {
         const optimized = await buildOptimizedAnimatedCutout(
           stampRawOriginalFrames,
-          animFps,
           animDuration,
           animBgColor,
           animTolerance,
@@ -2011,6 +2033,7 @@ Description: アニメーションLINEスタンプ (APNG)
         );
         const apngBlob = optimized.blob;
         const finalFramesDataUrls = optimized.dataUrls;
+        logAPNGInfo(targetReplaceId ? `replace:${targetReplaceId}` : 'new-cutout', optimized.info);
 
         const reader = new FileReader();
         const apngUrl = await new Promise<string>((resolve) => {
@@ -2601,7 +2624,7 @@ Description: アニメーションLINEスタンプ (APNG)
                           onClick={() => setAnimCropMethod('auto')}
                           className={`flex-1 py-1.5 rounded-md text-center transition text-xs font-bold ${animCropMethod === 'auto' ? 'bg-white shadow text-primary-700' : 'text-gray-500 hover:text-gray-700'}`}
                         >
-                          自動枠検出 (切れない)
+                          自動枠検出
                         </button>
                         <button
                           type="button"
@@ -2611,11 +2634,11 @@ Description: アニメーションLINEスタンプ (APNG)
                           等分割グリッド (行・列指定)
                         </button>
                       </div>
-                      <p className="text-[10px] text-gray-400">
-                        {animCropMethod === 'auto' 
-                          ? '※画像内の各キャラクターの位置を自動で検知して同じ大きさで切り出します。端が切れたり、不要なズレが起きるのを防ぎます。' 
-                          : '※指定した行・列（例えば 4×4 = 16個）で均等に切り出します。整列した動画用。'}
-                      </p>
+                      {animCropMethod === 'grid' && (
+                        <p className="text-[10px] text-gray-400">
+                          ※指定した行・列（例えば 4×4 = 16個）で均等に切り出します。整列した動画用。
+                        </p>
+                      )}
                     </div>
 
                     {/* グリッド分割 / 自動枠検出メッセージ */}
@@ -2656,14 +2679,7 @@ Description: アニメーションLINEスタンプ (APNG)
                           </div>
                         </div>
                       </div>
-                    ) : (
-                      <div className="bg-primary-50/50 p-3.5 rounded-xl border border-dashed border-primary-200 mb-4 font-sans">
-                        <span className="text-xs font-bold text-primary-800 block mb-1">💡 キャラクター自動検出が有効です</span>
-                        <p className="text-[11px] text-primary-600 leading-relaxed">
-                          動画の第1フレームから各コマのキャラクターを自動検出し、余白や傾きに引きずられずに完璧な中央揃えで等幅切り出しを行います。
-                        </p>
-                      </div>
-                    )}
+                    ) : null}
 
                       {/* 再生設定 */}
                       <div className="grid grid-cols-2 gap-3 pt-2">
@@ -2685,18 +2701,13 @@ Description: アニメーションLINEスタンプ (APNG)
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
-                            再生速度 (FPS)
+                            再生速度
                           </label>
-                          <input
-                            type="range"
-                            min="5"
-                            max="20"
-                            value={animFps}
-                            onChange={(e) => setAnimFps(parseInt(e.target.value))}
-                            className="w-full accent-primary-600"
-                          />
-                          <span className="text-[11px] font-bold text-gray-600 block text-right font-mono">
-                            {animFps} コマ/秒
+                          <div className="h-7 px-3 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-end text-[11px] font-bold text-gray-600 font-mono">
+                            {getAutoFps(animFrameCount, animDuration)} コマ/秒
+                          </div>
+                          <span className="text-[10px] text-gray-400 block text-right">
+                            コマ数と再生時間から自動計算
                           </span>
                         </div>
                       </div>
@@ -2860,15 +2871,6 @@ Description: アニメーションLINEスタンプ (APNG)
                       動画を切り出してAPNGスタンプを生成
                     </button>
 
-                    <button
-                      type="button"
-                      disabled={!animatedVideoUrl}
-                      onClick={() => openManualCrop(undefined, 'animated-video')}
-                      className="w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 flex items-center justify-center gap-3 text-base cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <Crop size={22} />
-                      手動で自由切り出し（自由カット）を開始
-                    </button>
                   </div>
                 </div>
               </div>
@@ -2999,6 +3001,7 @@ Description: アニメーションLINEスタンプ (APNG)
                           <div className="px-3 py-2 bg-white border-t text-[10px] leading-4 text-gray-500 font-mono">
                             <div>{stamp.apngInfo.width}x{stamp.apngInfo.height} / {formatBytes(stamp.apngInfo.byteSize)} / {stamp.apngInfo.frameCount}F</div>
                             <div>{stamp.apngInfo.totalDuration.toFixed(2)}s / delay {stamp.apngInfo.delay}/1000 / loop {stamp.apngInfo.loops}</div>
+                            <div>fcTL {stamp.apngInfo.fcTLCount} / fdAT {stamp.apngInfo.fdATCount}</div>
                             <div>色数削減: {stamp.apngInfo.colorReduced ? `${stamp.apngInfo.colors}色` : 'なし'}</div>
                           </div>
                         )}
@@ -3056,22 +3059,9 @@ Description: アニメーションLINEスタンプ (APNG)
                   <div className="relative border-2 border-dashed border-primary-200 bg-primary-50 rounded-xl p-6 hover:bg-primary-100 transition cursor-pointer text-center group">
                     <input type="file" accept="video/mp4, video/webm, video/*" onChange={handleVideoUploadForNewStamp} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                     <Upload className="mx-auto text-primary-500 mb-2" size={32} />
-                    <p className="font-bold text-primary-700">動画をアップロードして手動切り出し</p>
+                    <p className="font-bold text-primary-700">動画をアップロード</p>
                     <p className="text-xs text-gray-400 mt-1">MP4 / WebM など</p>
                   </div>
-                  {animatedVideoUrl && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowSourceSelectModal(false);
-                        openManualCrop(undefined, 'animated-video');
-                      }}
-                      className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2"
-                    >
-                      <Crop size={20} />
-                      現在の動画から手動で切り出す
-                    </button>
-                  )}
               </div>
            </div>
         </div>

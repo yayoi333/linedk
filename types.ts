@@ -111,6 +111,8 @@ export interface Stamp {
     totalDuration: number;
     delay: number;
     loops: number;
+    fcTLCount: number;
+    fdATCount: number;
     colors: number;
     colorReduced: boolean;
   };

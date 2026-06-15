@@ -139,6 +139,8 @@ export interface APNGInfo {
   totalDuration: number;
   delay: number;
   loops: number;
+  fcTLCount: number;
+  fdATCount: number;
   colors: number;
   colorReduced: boolean;
 }
@@ -515,6 +517,8 @@ export async function encodeAutoAPNG({
           totalDuration: (delay * frames.length * loops) / 1000,
           delay,
           loops,
+          fcTLCount: frames.length,
+          fdATCount: Math.max(0, frames.length - 1),
           colors,
           colorReduced: colors > 0,
         },
@@ -539,6 +543,8 @@ export async function encodeAutoAPNG({
       totalDuration: (delay * frames.length * loops) / 1000,
       delay,
       loops,
+      fcTLCount: frames.length,
+      fdATCount: Math.max(0, frames.length - 1),
       colors: best.colors,
       colorReduced: best.colors > 0,
     },
