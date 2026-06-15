@@ -125,7 +125,7 @@ export const StampEditorModal: React.FC<Props> = ({
   const [framesOffsetsY, setFramesOffsetsY] = useState<number[]>([]);
   const [framesFlipsH, setFramesFlipsH] = useState<boolean[]>([]);
   const [framesFlipsV, setFramesFlipsV] = useState<boolean[]>([]);
-  const [applyTransformToAll, setApplyTransformToAll] = useState(!stamp.scalesFrames);
+  const [applyTransformToAll, setApplyTransformToAll] = useState(true);
 
   // Sync state wrappers that support modifying individual frames or all frames
   const setScale = (val: number | ((prev: number) => number)) => {
@@ -471,6 +471,7 @@ export const StampEditorModal: React.FC<Props> = ({
       setFlipH(stamp.flipH ?? false);
       setFlipV(stamp.flipV ?? false);
       setMainImageLayerOrder(stamp.mainImageLayerOrder ?? 100);
+      setApplyTransformToAll(true);
       setSourceSize({ w: stamp.width, h: stamp.height });
       setMode('move');
       setViewZoom(1);

@@ -151,11 +151,6 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string; playPreview?:
   );
 });
 
-const formatBytes = (bytes: number) => {
-  if (bytes < 1024) return `${bytes}B`;
-  return `${(bytes / 1024).toFixed(0)}KB`;
-};
-
 const getLineLoopCount = (playbackDuration: number) => {
   if (!LINE_ANIMATION_DURATIONS.includes(playbackDuration as typeof LINE_ANIMATION_DURATIONS[number])) {
     throw new Error('再生時間はLINE規定に合わせて1秒 / 2秒 / 3秒 / 4秒から選択してください。');
@@ -311,10 +306,28 @@ const CopyButton = ({ text }: { text: string }) => {
     );
 };
 
-const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { config: ExportConfig | null, width: number, height: number, onClick?: () => void, previewBg: string, stamps: Stamp[] }) => {
+const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps, playPreview = false }: { config: ExportConfig | null, width: number, height: number, onClick?: () => void, previewBg: string, stamps: Stamp[], playPreview?: boolean }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [isHovered, setIsHovered] = useState(false);
+    const [previewFrameIndex, setPreviewFrameIndex] = useState(0);
     const s = config ? stamps.find(x => x.id === config.id) : null;
     const layerCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+    const shouldPlay = !!s?.isAnimated && (playPreview || isHovered);
+
+    useEffect(() => {
+        const frames = config?.rawFrames || s?.rawFrames || [];
+        if (!s?.isAnimated || frames.length <= 1 || !shouldPlay) {
+            setPreviewFrameIndex(0);
+            return;
+        }
+        const duration = config?.playbackDuration ?? s.playbackDuration ?? 2;
+        const interval = Math.max(40, (duration * 1000) / frames.length);
+        const timer = window.setInterval(() => {
+            setPreviewFrameIndex(prev => (prev + 1) % frames.length);
+        }, interval);
+        return () => window.clearInterval(timer);
+    }, [config?.rawFrames, config?.playbackDuration, s?.rawFrames, s?.isAnimated, s?.playbackDuration, shouldPlay]);
+
     useEffect(() => {
         if (!canvasRef.current || !config || !s) return;
         const ctx = canvasRef.current.getContext('2d');
@@ -345,12 +358,12 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
                 }
                 renderAllLayers(ctx, img, config, width, height, layerCacheRef.current);
             };
-            const frameIndex = config.selectedFrameIndex ?? 0;
+            const frameIndex = shouldPlay ? previewFrameIndex : (config.selectedFrameIndex ?? 0);
             const frames = config.rawFrames || s.rawFrames;
             img.src = config.customDataUrl || (s.isAnimated ? (frames?.[frameIndex] || frames?.[0] || s.dataUrl) : s.dataUrl);
         };
         draw();
-    }, [config, s, width, height, previewBg]);
+    }, [config, s, width, height, previewBg, previewFrameIndex, shouldPlay]);
     if (!config || !s) {
         return (
            <div className="mt-2 border border-gray-200 rounded bg-gray-50 flex items-center justify-center text-xs text-gray-400" style={{ width: width / 2, height: height / 2 }}>
@@ -360,7 +373,7 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
     }
     const displayScale = width === MAIN_WIDTH && height === MAIN_HEIGHT ? 0.65 : 1;
     return (
-        <div className="mt-2 flex justify-center bg-gray-100 rounded border border-gray-200 p-2 cursor-pointer hover:ring-2 hover:ring-primary-300 transition relative group" onClick={onClick}>
+        <div className="mt-2 flex justify-center bg-gray-100 rounded border border-gray-200 p-2 cursor-pointer hover:ring-2 hover:ring-primary-300 transition relative group" onClick={onClick} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
            <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ width: width * displayScale, height: height * displayScale, maxWidth: '100%' }} />
            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors pointer-events-none">
               <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-xs px-2 py-1 rounded-full font-bold shadow-sm text-gray-700">編集</span>
@@ -440,6 +453,7 @@ export default function App() {
   // New Image Processing State
   const [showSourceSelectModal, setShowSourceSelectModal] = useState(false);
   const [selectedSourceForNewStamp, setSelectedSourceForNewStamp] = useState<SourceImage | null>(null);
+  const [pendingAnimatedAddCrop, setPendingAnimatedAddCrop] = useState(false);
   const [showProcessSelection, setShowProcessSelection] = useState(false);
   const [selectedSourceHasGrid, setSelectedSourceHasGrid] = useState(false);
   const [isRemovingGridInFlow, setIsRemovingGridInFlow] = useState(false);
@@ -545,9 +559,17 @@ export default function App() {
     if (!ok) return;
     setShowSourceSelectModal(false);
     setStickerMode('animated');
-    setStep(AppStep.UPLOAD);
-    showToast('動画を追加しました。設定を確認して切り出してください。');
+    setPendingAnimatedAddCrop(true);
+    showToast('動画を追加しました。切り出す範囲を選んでください。');
   };
+
+  useEffect(() => {
+    if (!pendingAnimatedAddCrop || !animatedVideoUrl) return;
+    setPendingAnimatedAddCrop(false);
+    setTargetReplaceId(null);
+    setManualCropInitialSourceId('animated-video');
+    setIsManualCropping(true);
+  }, [pendingAnimatedAddCrop, animatedVideoUrl]);
 
   const [livePreviewUrl, setLivePreviewUrl] = useState<string>('');
   const uploadedVideoRef = useRef<HTMLVideoElement>(null);
@@ -1549,10 +1571,35 @@ Description: アニメーションLINEスタンプ (APNG)
           if (currentStamps.length === 0) return;
           const needsUpdate = currentStamps.some(s => s.originalDataUrl && s.currentTolerance !== globalTolerance);
           if (!needsUpdate) return;
+          setIsRegenerating(true);
           try {
               const updates = new Map<string, Stamp>();
               await Promise.all(currentStamps.map(async (stamp) => {
-                  if (stamp.originalDataUrl && stamp.currentTolerance !== globalTolerance) {
+                  if (stamp.currentTolerance === globalTolerance) return;
+                  if (stamp.isAnimated && stamp.rawOriginalFrames?.length) {
+                      const optimized = await buildOptimizedAnimatedCutout(
+                          stamp.rawOriginalFrames,
+                          stamp.playbackDuration ?? 2,
+                          animBgColor,
+                          globalTolerance,
+                          animRemovalAlg
+                      );
+                      const apngUrl = await new Promise<string>((resolve) => {
+                          const reader = new FileReader();
+                          reader.onloadend = () => resolve(reader.result as string);
+                          reader.readAsDataURL(optimized.blob);
+                      });
+                      updates.set(stamp.id, {
+                          ...stamp,
+                          dataUrl: apngUrl,
+                          originalDataUrl: optimized.rawDataUrls[0] || stamp.originalDataUrl,
+                          rawFrames: optimized.dataUrls,
+                          rawOriginalFrames: optimized.rawDataUrls,
+                          fps: optimized.fps,
+                          apngInfo: optimized.info,
+                          currentTolerance: globalTolerance
+                      });
+                  } else if (stamp.originalDataUrl) {
                       const newDataUrl = await reprocessStampWithTolerance(stamp.originalDataUrl, globalTolerance);
                       updates.set(stamp.id, {
                           ...stamp,
@@ -1566,10 +1613,12 @@ Description: アニメーションLINEスタンプ (APNG)
               }
           } catch (err) {
               console.error("Bulk processing failed", err);
+          } finally {
+              setIsRegenerating(false);
           }
       }, 100); 
       return () => clearTimeout(timer);
-  }, [globalTolerance]);
+  }, [globalTolerance, animBgColor, animRemovalAlg]);
 
   // Debounced Re-generation Effect (Gap)
   useEffect(() => {
@@ -2443,6 +2492,7 @@ Description: アニメーションLINEスタンプ (APNG)
                             </div>
                         </div>
                         <div className="hidden sm:block h-6 w-px bg-gray-200"></div>
+                        {false && (
                         <div className="flex items-center gap-2">
                             <button
                               onClick={() => setIsGapToleranceLocked(!isGapToleranceLocked)}
@@ -2483,6 +2533,7 @@ Description: アニメーションLINEスタンプ (APNG)
                             </div>
                             {isRegenerating && <Loader2 size={14} className="animate-spin text-primary-500" />}
                         </div>
+                        )}
                         <div className="flex items-center gap-2">
                             <button
                               onClick={() => setIsGlobalToleranceLocked(!isGlobalToleranceLocked)}
@@ -3225,14 +3276,6 @@ Description: アニメーションLINEスタンプ (APNG)
                               <div className="flex gap-1 h-5">{mainConfig?.id === stamp.id && <span className="bg-yellow-400 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow flex items-center">MAIN</span>}{tabConfig?.id === stamp.id && <span className="bg-blue-400 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow flex items-center">TAB</span>}</div>
                           </div>
                         )}
-                        {stamp.isAnimated && stamp.apngInfo && cardSize >= 140 && (
-                          <div className="px-3 py-2 bg-white border-t text-[10px] leading-4 text-gray-500 font-mono">
-                            <div>{stamp.apngInfo.width}x{stamp.apngInfo.height} / {formatBytes(stamp.apngInfo.byteSize)} / {stamp.apngInfo.frameCount}F</div>
-                            <div>{stamp.apngInfo.totalDuration.toFixed(2)}s / delay {stamp.apngInfo.delay}/1000 / loop {stamp.apngInfo.loops}</div>
-                            <div>fcTL {stamp.apngInfo.fcTLCount} / fdAT {stamp.apngInfo.fdATCount}</div>
-                            <div>色数削減: {stamp.apngInfo.colorReduced ? `${stamp.apngInfo.colors}色` : 'なし'}</div>
-                          </div>
-                        )}
                     </div>
                 ))}
               </div>
@@ -3244,7 +3287,7 @@ Description: アニメーションLINEスタンプ (APNG)
                         <div>
                             <div className="flex justify-between items-end mb-1"><label className="block text-sm font-medium text-gray-600">メイン画像 (240x240)</label><button onClick={() => downloadSpecialStamp(mainConfig, MAIN_WIDTH, MAIN_HEIGHT, 'main.png')} disabled={!mainConfig} className="text-gray-400 hover:text-primary-600 disabled:opacity-30" title="ダウンロード"><Download size={18} /></button></div>
                             <select className="w-full border-gray-300 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 mb-2 bg-primary-50" value={mainConfig?.id || ''} onChange={(e) => handleMainSelect(e.target.value)}>{stamps.map((s, i) => (<option key={s.id} value={s.id}>{s.isExcluded ? `(除外) スタンプ ${i + 1}` : `No.${i + 1} のスタンプ`}</option>))}</select>
-                            <CanvasPreview config={mainConfig} width={MAIN_WIDTH} height={MAIN_HEIGHT} previewBg={previewBg} stamps={stamps} onClick={() => { setEditingSpecialType('main'); const s = stamps.find(x => x.id === mainConfig?.id); if(s) setEditingStamp(s); }} />
+                            <CanvasPreview config={mainConfig} width={MAIN_WIDTH} height={MAIN_HEIGHT} previewBg={previewBg} stamps={stamps} playPreview={continuousPreview} onClick={() => { setEditingSpecialType('main'); const s = stamps.find(x => x.id === mainConfig?.id); if(s) setEditingStamp(s); }} />
                         </div>
                         <div>
                              <div className="flex justify-between items-end mb-1"><label className="block text-sm font-medium text-gray-600">タブ画像 (96x74)</label><button onClick={() => downloadSpecialStamp(tabConfig, TAB_WIDTH, TAB_HEIGHT, 'tab.png')} disabled={!tabConfig} className="text-gray-400 hover:text-primary-600 disabled:opacity-30" title="ダウンロード"><Download size={18} /></button></div>
