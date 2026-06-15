@@ -31,11 +31,11 @@ const isIOSDevice = () => {
     (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
 };
 
-const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, previewBg }) => {
+const StampPreview = React.memo<{ stamp: Stamp; previewBg: string; playPreview?: boolean }>(({ stamp, previewBg, playPreview = false }) => {
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [frameIndex, setFrameIndex] = useState(0);
 
   useEffect(() => {
-    if (stamp.isAnimated) return;
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -44,35 +44,35 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
     // Reset canvas only at the start of new render
     ctx.clearRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
 
-    const frameIndex = 0;
+    const activeFrameIndex = stamp.isAnimated ? frameIndex : 0;
     const img = new Image();
     img.onload = () => {
       const frameScale = stamp.isAnimated
-        ? (stamp.scalesFrames?.[frameIndex] ?? stamp.scale)
+        ? (stamp.scalesFrames?.[activeFrameIndex] ?? stamp.scale)
         : stamp.scale;
       const frameRotation = stamp.isAnimated
-        ? (stamp.rotationsFrames?.[frameIndex] ?? stamp.rotation ?? 0)
+        ? (stamp.rotationsFrames?.[activeFrameIndex] ?? stamp.rotation ?? 0)
         : (stamp.rotation ?? 0);
       const frameOffsetX = stamp.isAnimated
-        ? (stamp.offsetsXFrames?.[frameIndex] ?? stamp.offsetX)
+        ? (stamp.offsetsXFrames?.[activeFrameIndex] ?? stamp.offsetX)
         : stamp.offsetX;
       const frameOffsetY = stamp.isAnimated
-        ? (stamp.offsetsYFrames?.[frameIndex] ?? stamp.offsetY)
+        ? (stamp.offsetsYFrames?.[activeFrameIndex] ?? stamp.offsetY)
         : stamp.offsetY;
       const frameFlipH = stamp.isAnimated
-        ? (stamp.flipsHFrames?.[frameIndex] ?? stamp.flipH)
+        ? (stamp.flipsHFrames?.[activeFrameIndex] ?? stamp.flipH)
         : stamp.flipH;
       const frameFlipV = stamp.isAnimated
-        ? (stamp.flipsVFrames?.[frameIndex] ?? stamp.flipV)
+        ? (stamp.flipsVFrames?.[activeFrameIndex] ?? stamp.flipV)
         : stamp.flipV;
-      const frameTextObjects = stamp.isAnimated && stamp.textObjectsFrames?.[frameIndex] !== undefined
-        ? stamp.textObjectsFrames[frameIndex]
+      const frameTextObjects = stamp.isAnimated && stamp.textObjectsFrames?.[activeFrameIndex] !== undefined
+        ? stamp.textObjectsFrames[activeFrameIndex]
         : stamp.textObjects;
-      const frameImageLayers = stamp.isAnimated && stamp.imageLayersFrames?.[frameIndex] !== undefined
-        ? stamp.imageLayersFrames[frameIndex]
+      const frameImageLayers = stamp.isAnimated && stamp.imageLayersFrames?.[activeFrameIndex] !== undefined
+        ? stamp.imageLayersFrames[activeFrameIndex]
         : stamp.imageLayers;
-      const frameDrawingStrokes = stamp.isAnimated && stamp.drawingStrokesFrames?.[frameIndex] !== undefined
-        ? stamp.drawingStrokesFrames[frameIndex]
+      const frameDrawingStrokes = stamp.isAnimated && stamp.drawingStrokesFrames?.[activeFrameIndex] !== undefined
+        ? stamp.drawingStrokesFrames[activeFrameIndex]
         : stamp.drawingStrokes;
 
       const config: ExportConfig = {
@@ -81,8 +81,8 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
         rotation: frameRotation,
         offsetX: frameOffsetX,
         offsetY: frameOffsetY,
-        sourceWidth: stamp.width,
-        sourceHeight: stamp.height,
+        sourceWidth: stamp.isAnimated ? img.width : stamp.width,
+        sourceHeight: stamp.isAnimated ? img.height : stamp.height,
         textObjects: frameTextObjects,
         imageLayers: frameImageLayers,
         drawingStrokes: frameDrawingStrokes,
@@ -120,25 +120,26 @@ const StampPreview = React.memo<{ stamp: Stamp; previewBg: string }>(({ stamp, p
         renderAllLayers(ctx, img, config, TARGET_WIDTH, TARGET_HEIGHT, layerImages);
       });
     };
-    img.src = stamp.isAnimated ? (stamp.rawFrames?.[frameIndex] || stamp.dataUrl) : stamp.dataUrl;
-  }, [stamp, previewBg]);
+    img.src = stamp.isAnimated ? (stamp.rawFrames?.[activeFrameIndex] || stamp.rawFrames?.[0] || stamp.dataUrl) : stamp.dataUrl;
+  }, [stamp, previewBg, frameIndex]);
 
-  if (stamp.isAnimated) {
-    return (
-      <div className="w-full h-full relative overflow-hidden">
-        {previewBg === 'checker' ? (
-          <div className="absolute inset-0 bg-[linear-gradient(45deg,#f3f4f6_25%,transparent_25%),linear-gradient(-45deg,#f3f4f6_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f3f4f6_75%),linear-gradient(-45deg,transparent_75%,#f3f4f6_75%)] bg-[size:10px_10px] bg-[position:0_0,0_5px,5px_-5px,-5px_0] bg-gray-50" />
-        ) : (
-          <div className="absolute inset-0" style={{ backgroundColor: previewBg }} />
-        )}
-        <img
-          src={stamp.dataUrl || stamp.rawFrames?.[0]}
-          alt="animated stamp preview"
-          className="relative z-10 w-full h-full object-contain pointer-events-none select-none"
-        />
-      </div>
-    );
-  }
+  useEffect(() => {
+    const frameCount = stamp.rawFrames?.length || 0;
+    if (!stamp.isAnimated || frameCount <= 1) {
+      setFrameIndex(0);
+      return;
+    }
+    if (!playPreview) {
+      setFrameIndex(0);
+      return;
+    }
+    const duration = stamp.playbackDuration ?? 2;
+    const interval = Math.max(40, (duration * 1000) / frameCount);
+    const timer = window.setInterval(() => {
+      setFrameIndex(prev => (prev + 1) % frameCount);
+    }, interval);
+    return () => window.clearInterval(timer);
+  }, [stamp.isAnimated, stamp.rawFrames?.length, stamp.playbackDuration, playPreview]);
 
   return (
     <canvas
@@ -169,6 +170,78 @@ const getLineLoopCount = (playbackDuration: number) => {
 const getAutoFps = (frameCount: number, playbackDuration: number) => (
   Math.round((frameCount / playbackDuration) * 10) / 10
 );
+
+type RectBox = { x: number; y: number; w: number; h: number };
+
+const findOpaqueBoxes = (imageData: ImageData, mergeGap: number): RectBox[] => {
+  const { width, height, data } = imageData;
+  const visited = new Uint8Array(width * height);
+  const boxes: RectBox[] = [];
+
+  const findBox = (startX: number, startY: number): RectBox => {
+    let minX = startX;
+    let maxX = startX;
+    let minY = startY;
+    let maxY = startY;
+    const stack: Array<[number, number]> = [[startX, startY]];
+    visited[startY * width + startX] = 1;
+
+    while (stack.length) {
+      const [x, y] = stack.pop()!;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const visitedIdx = ny * width + nx;
+        if (visited[visitedIdx]) continue;
+        const dataIdx = visitedIdx * 4;
+        if (data[dataIdx + 3] > 10) {
+          visited[visitedIdx] = 1;
+          stack.push([nx, ny]);
+        }
+      }
+    }
+
+    return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+  };
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (!visited[idx] && data[idx * 4 + 3] > 10) {
+        const box = findBox(x, y);
+        if (box.w > 20 && box.h > 20) boxes.push(box);
+      }
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        const overlaps = a.x < b.x + b.w + mergeGap && a.x + a.w + mergeGap > b.x &&
+          a.y < b.y + b.h + mergeGap && a.y + a.h + mergeGap > b.y;
+        if (!overlaps) continue;
+        const x = Math.min(a.x, b.x);
+        const y = Math.min(a.y, b.y);
+        const maxX = Math.max(a.x + a.w, b.x + b.w);
+        const maxY = Math.max(a.y + a.h, b.y + b.h);
+        boxes[i] = { x, y, w: maxX - x, h: maxY - y };
+        boxes.splice(j, 1);
+        changed = true;
+        j--;
+      }
+    }
+  }
+
+  return boxes.sort((a, b) => a.y === b.y ? a.x - b.x : a.y - b.y);
+};
 
 const logAPNGInfo = (label: string, info: APNGInfo) => {
   console.info(`[APNG検証] ${label}`, {
@@ -287,7 +360,7 @@ const CanvasPreview = ({ config, width, height, onClick, previewBg, stamps }: { 
     }
     return (
         <div className="mt-2 flex justify-center bg-gray-100 rounded border border-gray-200 p-2 cursor-pointer hover:ring-2 hover:ring-primary-300 transition relative group" onClick={onClick}>
-           <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ width: width * 1.25, height: height * 1.25, maxWidth: '100%' }} />
+           <canvas ref={canvasRef} width={width} height={height} className="shadow-sm bg-white" style={{ width, height, maxWidth: '100%' }} />
            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors pointer-events-none">
               <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-xs px-2 py-1 rounded-full font-bold shadow-sm text-gray-700">編集</span>
            </div>
@@ -394,6 +467,8 @@ export default function App() {
   const [deleteTarget, setDeleteTarget] = useState<{id: string, index: number} | null>(null);
   const [showUnifyScaleModal, setShowUnifyScaleModal] = useState(false);
   const [unifyScaleTarget, setUnifyScaleTarget] = useState<number>(0);
+  const [hoveredStampId, setHoveredStampId] = useState<string | null>(null);
+  const [continuousPreview, setContinuousPreview] = useState(false);
 
   // API Key State
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
@@ -496,38 +571,49 @@ export default function App() {
         return;
       }
 
-      let cropX = 0, cropY = 0, cropW = W, cropH = H;
-      if (animCropMethod === 'grid') {
-        const cellW = Math.floor(W / animCols);
-        const cellH = Math.floor(H / animRows);
-        cropW = cellW;
-        cropH = cellH;
-      } else {
-        // Center crop 60%
-        cropW = Math.round(W * 0.6);
-        cropH = Math.round(H * 0.6);
-        cropX = Math.round((W - cropW) / 2);
-        cropY = Math.round((H - cropH) / 2);
-      }
+      const previewCanvas = document.createElement('canvas');
+      previewCanvas.width = W;
+      previewCanvas.height = H;
+      const previewCtx = previewCanvas.getContext('2d', { willReadFrequently: true });
+      if (!previewCtx) return;
+      previewCtx.drawImage(tempCanvas, 0, 0, W, H);
 
-      const cellCanvas = document.createElement('canvas');
-      cellCanvas.width = cropW;
-      cellCanvas.height = cropH;
-      const cellCtx = cellCanvas.getContext('2d', { willReadFrequently: true });
-      if (!cellCtx) return;
-
-      cellCtx.drawImage(tempCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-      const cellImgData = cellCtx.getImageData(0, 0, cropW, cropH);
+      const cellImgData = previewCtx.getImageData(0, 0, W, H);
       const processedImgData = removeBackgroundForAnimFrame(
         cellImgData,
         animBgColor,
         animTolerance,
         animRemovalAlg
       );
-      cellCtx.putImageData(processedImgData, 0, 0);
+      previewCtx.putImageData(processedImgData, 0, 0);
 
-      setLivePreviewUrl(cellCanvas.toDataURL('image/png'));
+      const drawBox = (box: RectBox, index: number) => {
+        previewCtx.save();
+        previewCtx.strokeStyle = '#10b981';
+        previewCtx.lineWidth = Math.max(2, Math.round(Math.min(W, H) / 180));
+        previewCtx.setLineDash([Math.max(6, previewCtx.lineWidth * 3), Math.max(4, previewCtx.lineWidth * 2)]);
+        previewCtx.strokeRect(box.x + 1, box.y + 1, Math.max(1, box.w - 2), Math.max(1, box.h - 2));
+        previewCtx.setLineDash([]);
+        previewCtx.fillStyle = 'rgba(16, 185, 129, 0.9)';
+        previewCtx.font = `bold ${Math.max(12, Math.round(Math.min(W, H) / 40))}px sans-serif`;
+        previewCtx.fillText(String(index + 1), box.x + 6, Math.max(16, box.y + 18));
+        previewCtx.restore();
+      };
+
+      if (animCropMethod === 'grid') {
+        const cellW = Math.floor(W / animCols);
+        const cellH = Math.floor(H / animRows);
+        let idx = 0;
+        for (let row = 0; row < animRows; row++) {
+          for (let col = 0; col < animCols; col++) {
+            drawBox({ x: col * cellW, y: row * cellH, w: cellW, h: cellH }, idx++);
+          }
+        }
+      } else {
+        findOpaqueBoxes(processedImgData, animGapTolerance).forEach(drawBox);
+      }
+
+      setLivePreviewUrl(previewCanvas.toDataURL('image/png'));
     } catch (err) {
       console.error('Failed to render live preview:', err);
     }
@@ -842,8 +928,8 @@ const compileAnimatedStamp = async (
         mainImageLayerOrder: stamp.mainImageLayerOrder ?? 100,
         fps: stamp.fps ?? 10,
         playbackDuration: stamp.playbackDuration,
-        sourceWidth: stamp.width,
-        sourceHeight: stamp.height,
+        sourceWidth: LINE_APNG_WIDTH,
+        sourceHeight: LINE_APNG_HEIGHT,
         textObjectsFrames: stamp.textObjectsFrames,
         imageLayersFrames: stamp.imageLayersFrames,
         drawingStrokesFrames: stamp.drawingStrokesFrames,
@@ -1045,7 +1131,7 @@ const compileAnimatedStamp = async (
         });
 
         const box = cropBoxes[bIdx];
-        const initialScale = Math.min((TARGET_WIDTH - 20) / box.w, (TARGET_HEIGHT - 20) / box.h);
+        const initialScale = Math.min((TARGET_WIDTH - 20) / LINE_APNG_WIDTH, (TARGET_HEIGHT - 20) / LINE_APNG_HEIGHT);
 
         results.push({
           id: `stamp-animated-${bIdx}`,
@@ -2156,7 +2242,7 @@ Description: アニメーションLINEスタンプ (APNG)
           reader.readAsDataURL(apngBlob);
         });
 
-        const initialScale = Math.min((TARGET_WIDTH - 20) / box.w, (TARGET_HEIGHT - 20) / box.h);
+        const initialScale = Math.min((TARGET_WIDTH - 20) / LINE_APNG_WIDTH, (TARGET_HEIGHT - 20) / LINE_APNG_HEIGHT);
 
         const fullySlicedStamp: Stamp = {
           ...croppedStamp,
@@ -2220,16 +2306,6 @@ Description: アニメーションLINEスタンプ (APNG)
       if(s) {
           setTabConfig(createSpecialConfig(s, TAB_WIDTH, TAB_HEIGHT));
       }
-  };
-
-  const handleTabFrameSelect = (frameIndex: number) => {
-      if (!tabConfig) return;
-      const stamp = stamps.find(s => s.id === tabConfig.id);
-      if (!stamp) return;
-      setTabConfig({
-          ...createSpecialConfig(stamp, TAB_WIDTH, TAB_HEIGHT, frameIndex),
-          id: tabConfig.id
-      });
   };
 
   const handleReCropFromEditor = (stamp: Stamp) => {
@@ -3032,6 +3108,18 @@ Description: アニメーションLINEスタンプ (APNG)
                         <button onClick={() => { const updatedStamps = stamps.map(s => ({ ...s, textObjects: (s.textObjects ?? []).filter(t => !t.id.startsWith('txt-set-')), })); setStamps(updatedStamps); showToast('一括削除しました'); }} className={`flex items-center gap-1 bg-white border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-600 font-bold py-1.5 px-3 rounded-lg shadow-sm text-xs sm:text-sm transition ${stamps.some(s => s.textObjects?.some(t => t.id.startsWith('txt-set-'))) ? '' : 'opacity-30 pointer-events-none'}`}><Trash2 size={14} />一括テキスト削除</button>
                         <button onClick={handleUnifyScale} className="flex items-center gap-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-600 font-bold py-1.5 px-3 rounded-lg shadow-sm text-xs sm:text-sm transition"><Sliders size={14} />サイズ揃え</button>
                         <button onClick={handleCenterAll} className="flex items-center gap-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-600 font-bold py-1.5 px-3 rounded-lg shadow-sm text-xs sm:text-sm transition"><Move size={14} />中央揃え</button>
+                        {isAnimatedSet && (
+                          <button
+                            onClick={() => setContinuousPreview(prev => !prev)}
+                            className={`flex items-center gap-1 border font-bold py-1.5 px-3 rounded-lg shadow-sm text-xs sm:text-sm transition ${
+                              continuousPreview
+                                ? 'bg-primary-600 border-primary-600 text-white hover:bg-primary-700'
+                                : 'bg-white border-gray-300 hover:bg-gray-50 text-gray-600'
+                            }`}
+                          >
+                            <RotateCw size={14} />連続再生
+                          </button>
+                        )}
                     </div>
                 </div>
               </div>
@@ -3054,14 +3142,16 @@ Description: アニメーションLINEスタンプ (APNG)
                       onDragEnter={!useArrowReorder ? (e) => handleDragEnter(e, index) : undefined}
                       onDragOver={!useArrowReorder ? handleDragOver : undefined}
                       onDragEnd={!useArrowReorder ? handleDragEnd : undefined}
+                      onMouseEnter={() => setHoveredStampId(stamp.id)}
+                      onMouseLeave={() => setHoveredStampId(prev => prev === stamp.id ? null : prev)}
                       className={`bg-white rounded-xl shadow border-2 transition-all overflow-hidden ${
                         stamp.isExcluded ? 'opacity-50 border-gray-200' : 'border-transparent hover:border-primary-300'
                       } ${useArrowReorder ? 'cursor-default' : 'cursor-move'}`}
                     >
                         <div className="w-full aspect-[37/32] relative group" onClick={() => setEditingStamp(stamp)}>
-                            <StampPreview stamp={stamp} previewBg={previewBg} />
+                            <StampPreview stamp={stamp} previewBg={previewBg} playPreview={continuousPreview || hoveredStampId === stamp.id} />
                             {cardSize >= 80 && (
-                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors pointer-events-none">
+                              <div className="absolute inset-0 z-20 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors pointer-events-none">
                                 <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-xs px-2 py-1 rounded-full font-bold shadow-sm">編集</span>
                               </div>
                             )}
@@ -3148,32 +3238,6 @@ Description: アニメーションLINEスタンプ (APNG)
                         <div>
                              <div className="flex justify-between items-end mb-1"><label className="block text-sm font-medium text-gray-600">タブ画像 (96x74)</label><button onClick={() => downloadSpecialStamp(tabConfig, TAB_WIDTH, TAB_HEIGHT, 'tab.png')} disabled={!tabConfig} className="text-gray-400 hover:text-primary-600 disabled:opacity-30" title="ダウンロード"><Download size={18} /></button></div>
                             <select className="w-full border-gray-300 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 mb-2 bg-primary-50" value={tabConfig?.id || ''} onChange={(e) => handleTabSelect(e.target.value)}>{stamps.map((s, i) => (<option key={s.id} value={s.id}>{s.isExcluded ? `(除外) スタンプ ${i + 1}` : `No.${i + 1} のスタンプ`}</option>))}</select>
-                            {(() => {
-                              const selectedTabStamp = tabConfig ? stamps.find(s => s.id === tabConfig.id) : null;
-                              if (!selectedTabStamp?.isAnimated || !selectedTabStamp.rawFrames?.length) return null;
-                              return (
-                                <div className="mb-2">
-                                  <div className="text-[11px] font-bold text-gray-500 mb-1">タブに使うコマを選択</div>
-                                  <div className="grid grid-cols-5 gap-1.5">
-                                    {selectedTabStamp.rawFrames.map((frameUrl, idx) => {
-                                      const selected = (tabConfig?.selectedFrameIndex ?? 0) === idx;
-                                      return (
-                                        <button
-                                          key={idx}
-                                          type="button"
-                                          onClick={() => handleTabFrameSelect(idx)}
-                                          className={`relative aspect-square rounded-md border overflow-hidden bg-white transition ${selected ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200 hover:border-primary-300'}`}
-                                          title={`コマ ${idx + 1}`}
-                                        >
-                                          <img src={frameUrl} alt={`コマ ${idx + 1}`} className="w-full h-full object-contain" />
-                                          <span className={`absolute right-0.5 bottom-0.5 rounded px-1 text-[9px] font-bold ${selected ? 'bg-primary-600 text-white' : 'bg-white/90 text-gray-500'}`}>{idx + 1}</span>
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              );
-                            })()}
                             <CanvasPreview config={tabConfig} width={TAB_WIDTH} height={TAB_HEIGHT} previewBg={previewBg} stamps={stamps} onClick={() => { setEditingSpecialType('tab'); const s = stamps.find(x => x.id === tabConfig?.id); if(s) setEditingStamp(s); }} />
                         </div>
                     </div>

@@ -7,6 +7,7 @@ interface CollapsiblePanelProps {
   collapsed: boolean;
   onToggle: () => void;
   summaryContent?: React.ReactNode;
+  headerExtra?: React.ReactNode;
   bgColor?: string;
   borderColor?: string;
   children: React.ReactNode;
@@ -18,6 +19,7 @@ export const CollapsiblePanel: React.FC<CollapsiblePanelProps> = ({
   collapsed, 
   onToggle, 
   summaryContent, 
+  headerExtra,
   bgColor = 'bg-gray-50', 
   borderColor = 'border-gray-200', 
   children
@@ -38,10 +40,13 @@ export const CollapsiblePanel: React.FC<CollapsiblePanelProps> = ({
             </div>
           )}
         </div>
-        {collapsed ? 
-          <ChevronDown size={16} className="text-gray-400 shrink-0" /> : 
-          <ChevronUp size={16} className="text-gray-400 shrink-0" />
-        }
+        <div className="flex items-center gap-2 shrink-0">
+          {headerExtra}
+          {collapsed ? 
+            <ChevronDown size={16} className="text-gray-400 shrink-0" /> : 
+            <ChevronUp size={16} className="text-gray-400 shrink-0" />
+          }
+        </div>
       </button>
       {!collapsed && (
         <div className="mt-3 animate-fade-in">

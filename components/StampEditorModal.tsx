@@ -350,6 +350,25 @@ export const StampEditorModal: React.FC<Props> = ({
   const [tolerance, setTolerance] = useState(stamp.currentTolerance || 50);
 
   const [workingDataUrl, setWorkingDataUrlState] = useState(stamp.dataUrl);
+  const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null);
+  const [sourceSize, setSourceSize] = useState({ w: stamp.width, h: stamp.height });
+  const originalLoadSeqRef = useRef(0);
+
+  const loadOriginalImage = (url?: string) => {
+    const seq = ++originalLoadSeqRef.current;
+    if (!url) {
+      setOriginalImage(null);
+      return;
+    }
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      if (originalLoadSeqRef.current === seq) setOriginalImage(img);
+    };
+    img.onerror = () => {
+      if (originalLoadSeqRef.current === seq) setOriginalImage(null);
+    };
+  };
 
   const setWorkingDataUrl = (val: string | ((prev: string) => string)) => {
     setWorkingDataUrlState(prev => {
@@ -375,7 +394,6 @@ export const StampEditorModal: React.FC<Props> = ({
       });
     }
   };
-  const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null);
   
   // Debounce for tolerance
   const toleranceTimeoutRef = useRef<number | null>(null);
@@ -420,6 +438,7 @@ export const StampEditorModal: React.FC<Props> = ({
       setFlipH(stamp.flipH ?? false);
       setFlipV(stamp.flipV ?? false);
       setMainImageLayerOrder(stamp.mainImageLayerOrder ?? 100);
+      setSourceSize({ w: stamp.width, h: stamp.height });
       setMode('move');
       setViewZoom(1);
       setCanvasPan({ x: 0, y: 0 });
@@ -522,13 +541,7 @@ export const StampEditorModal: React.FC<Props> = ({
         ? (initOriginalFrames[0] || stamp.originalDataUrl || initFrames[0])
         : (staticFrameSourceFrames?.[initialStaticFrameIndex] || stamp.originalDataUrl);
 
-      if (firstOrigUrl) {
-          const img = new Image();
-          img.src = firstOrigUrl;
-          img.onload = () => setOriginalImage(img);
-      } else {
-          setOriginalImage(null);
-      }
+      loadOriginalImage(firstOrigUrl);
 
       // Load Materials
       loadMaterials().then(setMaterials).catch(console.error);
@@ -541,13 +554,7 @@ export const StampEditorModal: React.FC<Props> = ({
       setWorkingDataUrlState(frames[currentFrameIndex]);
       
       const orig = originalFrames[currentFrameIndex] || stamp.originalDataUrl || frames[currentFrameIndex];
-      if (orig) {
-        const img = new Image();
-        img.src = orig;
-        img.onload = () => setOriginalImage(img);
-      } else {
-        setOriginalImage(null);
-      }
+      loadOriginalImage(orig);
       
       setTextObjectsState(framesTextObjects[currentFrameIndex] || []);
       setImageLayersState(framesImageLayers[currentFrameIndex] || []);
@@ -575,9 +582,7 @@ export const StampEditorModal: React.FC<Props> = ({
     setStaticSelectedFrameIndex(frameIndex);
     onStaticFrameSelect?.(frameIndex);
     setWorkingDataUrlState(frameUrl);
-    const img = new Image();
-    img.src = frameUrl;
-    img.onload = () => setOriginalImage(img);
+    loadOriginalImage(frameUrl);
     addToHistory({ dataUrl: frameUrl });
   };
 
@@ -768,9 +773,12 @@ export const StampEditorModal: React.FC<Props> = ({
 
     const img = new Image();
     img.onload = () => {
+        if (img.width !== sourceSize.w || img.height !== sourceSize.h) {
+            setSourceSize({ w: img.width, h: img.height });
+        }
         // Prepare common variables
-        const drawnW = stamp.width * scale;
-        const drawnH = stamp.height * scale;
+        const drawnW = img.width * scale;
+        const drawnH = img.height * scale;
         const cx = canvas.width / 2 + offset.x;
         const cy = canvas.height / 2 + offset.y;
 
@@ -1265,10 +1273,10 @@ export const StampEditorModal: React.FC<Props> = ({
   const getLocalImageCoords = (canvasX: number, canvasY: number) => {
       const cx = targetWidth / 2 + offset.x; const cy = targetHeight / 2 + offset.y;
       const { x: localX, y: localY } = transformToLocal(canvasX, canvasY, cx, cy, rotation);
-      const drawnW = stamp.width * scale; const drawnH = stamp.height * scale;
+      const drawnW = sourceSize.w * scale; const drawnH = sourceSize.h * scale;
       const adjustedLocalX = flipH ? -localX : localX; const adjustedLocalY = flipV ? -localY : localY;
       const imgX = (adjustedLocalX + drawnW / 2) / scale; const imgY = (adjustedLocalY + drawnH / 2) / scale;
-      return { imgX, imgY, inside: (imgX >= 0 && imgX <= stamp.width && imgY >= 0 && imgY <= stamp.height) };
+      return { imgX, imgY, inside: (imgX >= 0 && imgX <= sourceSize.w && imgY >= 0 && imgY <= sourceSize.h) };
   };
   const prepareEditCanvas = async () => {
       let resolveCanvasDimensions: (size: { w: number, h: number }) => void;
@@ -1301,12 +1309,12 @@ export const StampEditorModal: React.FC<Props> = ({
   };
   const applyEraser = async (canvasX: number, canvasY: number) => {
       const { imgX, imgY, inside } = getLocalImageCoords(canvasX, canvasY);
-      if (!inside && (imgX < -50 || imgX > stamp.width + 50 || imgY < -50 || imgY > stamp.height + 50)) return;
+      if (!inside && (imgX < -50 || imgX > sourceSize.w + 50 || imgY < -50 || imgY > sourceSize.h + 50)) return;
       const res = await prepareEditCanvas(); if (!res) return;
       const { ctx, editW, editH } = res;
 
-      const scaleX = editW / stamp.width;
-      const scaleY = editH / stamp.height;
+      const scaleX = editW / sourceSize.w;
+      const scaleY = editH / sourceSize.h;
       const nativeImgX = imgX * scaleX;
       const nativeImgY = imgY * scaleY;
       const nativeBrushR = ((eraserSize / scale) / 2) * ((scaleX + scaleY) / 2);
@@ -1329,12 +1337,12 @@ export const StampEditorModal: React.FC<Props> = ({
   const applyRestore = async (canvasX: number, canvasY: number) => {
       if (!originalImage) return;
       const { imgX, imgY, inside } = getLocalImageCoords(canvasX, canvasY);
-      if (!inside && (imgX < -50 || imgX > stamp.width + 50 || imgY < -50 || imgY > stamp.height + 50)) return;
+      if (!inside && (imgX < -50 || imgX > sourceSize.w + 50 || imgY < -50 || imgY > sourceSize.h + 50)) return;
       const res = await prepareEditCanvas(); if (!res) return;
       const { ctx, editW, editH } = res;
 
-      const scaleX = editW / stamp.width;
-      const scaleY = editH / stamp.height;
+      const scaleX = editW / sourceSize.w;
+      const scaleY = editH / sourceSize.h;
       const nativeImgX = imgX * scaleX;
       const nativeImgY = imgY * scaleY;
       const nativeBrushR = ((eraserSize / scale) / 2) * ((scaleX + scaleY) / 2);
@@ -1359,8 +1367,8 @@ export const StampEditorModal: React.FC<Props> = ({
       const res = await prepareEditCanvas(); if (!res) return;
       const { ctx, editW, editH } = res;
 
-      const scaleX = editW / stamp.width;
-      const scaleY = editH / stamp.height;
+      const scaleX = editW / sourceSize.w;
+      const scaleY = editH / sourceSize.h;
       const nativeImgX = Math.floor(imgX * scaleX);
       const nativeImgY = Math.floor(imgY * scaleY);
 
@@ -1622,7 +1630,7 @@ export const StampEditorModal: React.FC<Props> = ({
     if (mode === 'move') {
         const cx = targetWidth / 2 + offset.x; const cy = targetHeight / 2 + offset.y;
         const { x: localX, y: localY } = transformToLocal(x, y, cx, cy, rotation);
-        const drawnW = stamp.width * scale; const drawnH = stamp.height * scale; const hw = drawnW / 2; const hh = drawnH / 2; const handleRadius = 25; 
+        const drawnW = sourceSize.w * scale; const drawnH = sourceSize.h * scale; const hw = drawnW / 2; const hh = drawnH / 2; const handleRadius = 25; 
         if (Math.hypot(localX - (-hw), localY - (-hh)) < handleRadius) { setActiveImageHandle('tl'); setIsResizingImage(true); setLastPos({x, y}); return; }
         if (Math.hypot(localX - (hw), localY - (-hh)) < handleRadius) { setActiveImageHandle('tr'); setIsResizingImage(true); setLastPos({x, y}); return; }
         if (Math.hypot(localX - (-hw), localY - (hh)) < handleRadius) { setActiveImageHandle('bl'); setIsResizingImage(true); setLastPos({x, y}); return; }
@@ -1915,20 +1923,6 @@ export const StampEditorModal: React.FC<Props> = ({
                                 </button>
                             </div>
                         </div>
-
-                        {/* 各コマ個別の配置・変形トグル */}
-                        <div className="flex items-center gap-1.5 bg-gray-100 rounded-lg p-1">
-                            <label className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-bold text-gray-600 cursor-pointer select-none hover:bg-gray-200 transition">
-                                <input
-                                    type="checkbox"
-                                    checked={applyTransformToAll}
-                                    onChange={(e) => setApplyTransformToAll(e.target.checked)}
-                                    className="rounded text-primary-600 focus:ring-primary-500 w-3 h-3 cursor-pointer"
-                                />
-                                全てに同期
-                            </label>
-                        </div>
-
                         <button
                             type="button"
                             onClick={() => {
@@ -2121,22 +2115,24 @@ export const StampEditorModal: React.FC<Props> = ({
                             {(flipH || flipV) && ' / 反転'}
                         </span>
                     }
+                    headerExtra={stamp.isAnimated ? (
+                        <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-md text-[11px] font-bold cursor-pointer select-none border border-amber-200 transition"
+                            title="画像のサイズ・位置・回転・反転を全コマへ同時に反映します"
+                        >
+                            <span className="hidden sm:inline">変形の適用範囲</span>
+                            <input
+                                type="checkbox"
+                                checked={applyTransformToAll}
+                                onChange={(e) => setApplyTransformToAll(e.target.checked)}
+                                className="rounded text-primary-600 focus:ring-primary-300 w-3.5 h-3.5 cursor-pointer"
+                            />
+                            すべてのコマ
+                        </label>
+                    ) : undefined}
                  >
                     <div className="space-y-3">
-                        {stamp.isAnimated && (
-                            <div className="flex items-center justify-between border-b pb-2 mb-2">
-                                <span className="text-xs text-gray-500 font-bold">変形の適用範囲</span>
-                                <label className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-md text-[11px] font-bold cursor-pointer select-none border border-amber-200 transition">
-                                    <input
-                                        type="checkbox"
-                                        checked={applyTransformToAll}
-                                        onChange={(e) => setApplyTransformToAll(e.target.checked)}
-                                        className="rounded text-primary-600 focus:ring-primary-300 w-3.5 h-3.5 cursor-pointer"
-                                    />
-                                    すべてのコマに一括同期
-                                </label>
-                            </div>
-                        )}
                         <ImageControlPanel
                             scale={scale}
                             rotation={rotation}
