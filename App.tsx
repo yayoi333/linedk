@@ -2005,9 +2005,6 @@ Description: アニメーションLINEスタンプ (APNG)
 
   const handleExport = async () => {
     if (!mainConfig || !tabConfig) return alert('メイン画像とタブ画像を選択してください');
-    if (!isExactCount) {
-      return alert(`申請可能個数は ${allowedCounts.join(' / ')} 個です。現在は ${validStampsCount} 個です。`);
-    }
     await createAndDownloadZip(stamps, mainConfig, tabConfig, meta, renumber);
     await saveProject(stamps, sourceImages, mainConfig, tabConfig, meta, globalTolerance, gapTolerance, previewBg);
     setLastSavedAt(new Date().toISOString());
@@ -3161,7 +3158,7 @@ Description: アニメーションLINEスタンプ (APNG)
                         <div className="text-xs text-gray-500 mt-2 bg-blue-50 p-2 rounded border border-blue-100">
                              <div className="flex items-start gap-1">
                                 <Info size={14} className="text-blue-500 mt-0.5 shrink-0" />
-                                <div><span className="font-bold text-blue-600">申請可能個数:</span> {allowedCounts.join(', ')}個<br/>{isExactCount ? <span className="text-green-600 font-bold">現在 {validStampsCount}個 (申請可能です！)</span> : <>{isOverLimit ? <span className="text-orange-600 font-bold">{maxAllowedCount}個を超えています。</span> : <span className="text-orange-600">次は <span className="font-bold">{nextTarget}個</span> を目指しましょう</span>}</>}<br/><span className="opacity-70 text-[10px]">※不足していると申請できません。</span></div>
+                                <div><span className="font-bold text-blue-600">申請可能個数:</span> {allowedCounts.join(', ')}個<br/>{isExactCount ? <span className="text-green-600 font-bold">現在 {validStampsCount}個 (申請可能です！)</span> : <>{isOverLimit ? <span className="text-orange-600 font-bold">{maxAllowedCount}個を超えています。</span> : <span className="text-orange-600">次は <span className="font-bold">{nextTarget}個</span> を目指しましょう</span>}</>}<br/><span className="opacity-70 text-[10px]">※申請時は規定数が必要です。作業保存用ZIPはこのまま保存できます。</span></div>
                              </div>
                         </div>
                     </div>
